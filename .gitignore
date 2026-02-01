@@ -1,0 +1,4 @@
+*.ipynb
+.history
+*.pt
+meeting.md

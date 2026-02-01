@@ -1,0 +1,103 @@
+experiment: feedback_loop
+
+data_generation:
+  # Domain for u=(p1,p2) and theta=(alpha1, alpha2, gamma1, gamma2)
+  domain:
+    u_bounds:
+      - [0.0, 5.0]
+      - [0.0, 5.0]
+    theta_bounds:
+      - [2.0, 4.0]
+      - [2.0, 4.0]
+      - [0.1, 0.3]
+      - [0.1, 0.3]
+  train:
+    N_obs: 1200
+    seed: 123
+    method_theta: uniform
+    method_u: resample
+    n_local_base: 60
+    n_far: 100
+    delta_default: 0.25
+  test:
+    N_obs: 600
+    seed: 456
+    method_theta: uniform
+    method_u: resample
+    n_local_base: 60
+    n_far: 100
+    delta_default: 0.25
+  outputs:
+    out_dir: data
+    data_train_npz: feedback_loop_data_train.npz
+    data_test_npz: feedback_loop_data_test.npz
+    obs_train_pkl: feedback_loop_obs_train.pkl
+    obs_test_pkl: feedback_loop_obs_test.pkl
+
+training:
+  device: auto
+  num_workers: 0
+  phi:
+    enabled: true
+    seed: 123
+    batch_size: 256
+    epochs: 50
+    lr: 5.0e-3
+    model:
+      embed_dim: 10
+      width: [30, 50]
+      depth: [2, 3]
+    eta:
+      scale: 1.5
+      cap: 0.01
+  count:
+    enabled: false
+    seed: 128
+    batch_size: 512
+    epochs: 300
+    lr: 5.0e-4
+    model:
+      width: 128
+      depth: 4
+  stability_classifier:
+    enabled: false
+    seed: 130
+    batch_size: 256
+    epochs: 100
+    lr: 1.0e-3
+    model:
+      embed_dim: 10
+      width: [64, 64]
+      depth: [2, 2]
+  paths:
+    data_dir: data
+    out_dir: .
+    phi_ckpt: psnn_phi.pt
+    count_ckpt: psnn_numsol.pt
+    stability_ckpt: psnn_stability_cls.pt
+
+postprocessing:
+  locate:
+    m: 400
+    lo: 0.0
+    hi: 5.0
+    L_cut: null
+    theta: null
+    bifurcation: false
+    true_bifurcation: false
+    alpha1: 4.0
+    gamma1: 0.2
+    gamma2: 0.2
+    alpha2_min: 2.0
+    alpha2_max: 3.0
+    alpha2_steps: 101
+    obs: null
+    obs_index: 0
+    no_plot: false
+    save_fig: null
+  paths:
+    data_dir: data
+    out_dir: .
+    phi_ckpt: psnn_phi.pt
+    count_ckpt: psnn_numsol.pt
+    stability_ckpt: psnn_stability_cls.pt

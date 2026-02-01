@@ -1,0 +1,92 @@
+experiment: gray_scott
+
+data_generation:
+  # Domain for u=(u,v) and theta=(f,k)
+  domain:
+    u_bounds:
+      - [0.0, 1.0]
+      - [0.0, 1.0]
+    theta_bounds:
+      - [0.0, 0.3]
+      - [0.0, 0.08]
+  delta:
+    delta0: 1.0e-3
+    delta1: 1.0
+  train:
+    N_obs: 1000
+    N_random: 200
+    seed: 123
+    method_theta: uniform
+    method_u: uniform
+  test:
+    N_obs: 600
+    N_random: 200
+    seed: 456
+    method_theta: uniform
+    method_u: uniform
+  outputs:
+    out_dir: data
+    data_train_npz: gray_scott_data_train.npz
+    data_test_npz: gray_scott_data_test.npz
+    obs_train_pkl: gray_scott_obs_train.pkl
+    obs_test_pkl: gray_scott_obs_test.pkl
+
+training:
+  device: auto
+  num_workers: 0
+  phi:
+    enabled: false
+    seed: 123
+    batch_size: 200
+    epochs: 100
+    lr: 1.0e-3
+    model:
+      embed_dim: 8
+      width: [30, 20]
+      depth: [4, 3]
+    eta:
+      scale: 1.5
+      cap: 0.01
+  count:
+    enabled: true
+    seed: 123
+    batch_size: 200
+    epochs: 500
+    lr: 3.0e-4
+    model:
+      width: 256
+      depth: 3
+  stability_classifier:
+    enabled: true
+    seed: 123
+    batch_size: 200
+    epochs: 100
+    lr: 1.0e-3
+    model:
+      embed_dim: 8
+      width: [64, 64]
+      depth: [2, 2]
+  paths:
+    data_dir: data
+    out_dir: .
+    phi_ckpt: psnn_phi.pt
+    count_ckpt: psnn_numsol.pt
+    stability_ckpt: psnn_stability_cls.pt
+    compat_phi_ckpt: psnn_final.pt
+
+postprocessing:
+  locate:
+    m: 100
+    L_cut: 0.48
+    make_map: false
+    grid_n: 100
+    thetas:
+      - [0.02, 0.05]
+  paths:
+    data_dir: data
+    out_dir: .
+    phi_ckpt: psnn_phi.pt
+    compat_phi_ckpt: psnn_final.pt
+    count_ckpt: psnn_numsol.pt
+    stability_ckpt: psnn_stability_cls.pt
+    solution_map: solution_map_with_stability_info.png

@@ -1,4 +1,5 @@
 experiment: feedback_loop
+seed: 123
 
 data_generation:
   # Domain for u=(p1,p2) and theta=(alpha1, alpha2, gamma1, gamma2)
@@ -7,13 +8,12 @@ data_generation:
       - [0.0, 5.0]
       - [0.0, 5.0]
     theta_bounds:
-      - [2.0, 4.0]
-      - [2.0, 4.0]
+      - [1.0, 5.0]
+      - [1.0, 5.0]
       - [0.1, 0.3]
       - [0.1, 0.3]
   train:
     N_obs: 1200
-    seed: 123
     method_theta: uniform
     method_u: resample
     n_local_base: 60
@@ -21,7 +21,6 @@ data_generation:
     delta_default: 0.25
   test:
     N_obs: 600
-    seed: 456
     method_theta: uniform
     method_u: resample
     n_local_base: 60
@@ -38,21 +37,19 @@ training:
   device: auto
   num_workers: 0
   phi:
-    enabled: true
-    seed: 123
-    batch_size: 256
+    enabled: false
+    batch_size: 1024
     epochs: 50
-    lr: 5.0e-3
+    lr: 1e-3
     model:
       embed_dim: 10
-      width: [30, 50]
+      width: [60, 100]
       depth: [2, 3]
     eta:
       scale: 1.5
       cap: 0.01
   count:
-    enabled: false
-    seed: 128
+    enabled: true
     batch_size: 512
     epochs: 300
     lr: 5.0e-4
@@ -60,8 +57,7 @@ training:
       width: 128
       depth: 4
   stability_classifier:
-    enabled: false
-    seed: 130
+    enabled: true
     batch_size: 256
     epochs: 100
     lr: 1.0e-3
@@ -81,7 +77,21 @@ postprocessing:
     m: 400
     lo: 0.0
     hi: 5.0
+    locate_mode: fixed
     L_cut: null
+    amr:
+      method: grid
+      random_state: 0
+      max_iter: 12
+      tol: 1.0e-4
+      m0: 12
+      m_growth: 1.5
+      m_local: 60
+      base_radius: 0.4
+      N_global: 2000
+      N_local: 1000
+      r_default: 0.3
+      radius_scale: 0.45
     theta: null
     bifurcation: false
     true_bifurcation: false

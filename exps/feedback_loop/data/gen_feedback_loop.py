@@ -37,10 +37,10 @@ def _poly_coeffs(alpha1: float, alpha2: float, gamma1: float, gamma2: float) -> 
 
     ag1 = a1 + g1
     ag2 = a2 + g2
-    g2_2 = g2 * g2
-    g2_3 = g2_2 * g2
-    ag2_2 = ag2 * ag2
-    ag2_3 = ag2_2 * ag2
+    g2_2 = g2**2
+    g2_3 = g2**3
+    ag2_2 = ag2**2
+    ag2_3 = ag2**3
 
     # Matches the collaborator notebook construction (with zeros for missing powers)
     c10 = g2_3 + 1.0
@@ -110,16 +110,9 @@ def U(theta: np.ndarray) -> list[dict]:
         return []
 
     p1 = np.array(sorted(p1_list), dtype=float)
-    p1_3 = p1**3
+    p2 = g2 + a2 / (1.0 + p1 ** 3)
 
-    # notebook: pp1 = ((1+p1^3)/p1)/(p1-g1)/p2
-    pp1 = (1.0 + p1_3) / p1
-    pp1 = pp1 / (p1 - g1)
 
-    pp2 = 1.0 / (1.0 + p1_3)
-    p2 = g2 + a2 * pp2
-
-    pp1 = pp1 / p2
 
     # ----------------------
     # STABILITY COMPUTATION
@@ -128,13 +121,21 @@ def U(theta: np.ndarray) -> list[dict]:
     # simple scalar discriminator computed from the equilibrium values.
     #
     # Here we store stability per equilibrium as a boolean field `stable`.
-    value_r = 3.0 * math.sqrt(a2 / a1)
+
 
     out: list[dict] = []
     for i in range(len(p1)):
         u = np.array([p1[i], p2[i]], dtype=np.float32)
         # notebook: value_r > val => -1 (unstable), else +1 (stable)
-        stable = bool(not (value_r > pp1[i]))
+        J11 = -1.0
+        J22 = -1.0
+
+        J12 = -3*a1*u[1]**2 / (1+u[1]**3)**2
+        J21 = -3*a2*u[0]**2 / (1+u[0]**3)**2
+
+        detJ = J11*J22 - J12*J21
+
+        stable = detJ > 0
         out.append({"theta": theta.astype(np.float32), "u": u, "stable": stable})
 
     return out
@@ -159,6 +160,24 @@ def _per_center_deltas(centers: np.ndarray, delta_default: float = 0.25) -> np.n
             dmin = min(dmin, float(np.linalg.norm(centers[i] - centers[j])))
         deltas[i] = min(0.25 * dmin, float(delta_default))
     return deltas
+
+
+def _per_theta_delta(centers: np.ndarray, delta_default: float = 0.25) -> float:
+    """Single Gaussian radius shared by all centers for one theta."""
+    centers = np.asarray(centers, dtype=float)
+    K = centers.shape[0]
+    if K <= 1:
+        return float(delta_default)
+
+    dmin = np.inf
+    for i in range(K):
+        for j in range(i + 1, K):
+            dmin = min(dmin, float(np.linalg.norm(centers[i] - centers[j])))
+
+    return float(min(0.25 * dmin, float(delta_default)))
+
+
+
 
 
 def Phi_theta(u_input: np.ndarray,
@@ -231,6 +250,7 @@ def gen_data(
     n_local_base: int = 60,
     n_far: int = 100,
     delta_default: float = 0.25,
+    delta_mode: str = "per_center",
     theta_bounds: Optional[np.ndarray] = None,
     u_bounds: Optional[np.ndarray] = None,
 ):
@@ -272,6 +292,15 @@ def gen_data(
 
     for obs in tqdm.tqdm(observations, desc="Generating feedback-loop data"):
         centers = np.array([s["u"] for s in obs["U"]], dtype=np.float32) if len(obs["U"]) > 0 else np.zeros((0, 2), dtype=np.float32)
+        if centers.shape[0] == 0:
+            deltas = np.zeros((0,), dtype=float)
+        elif delta_mode == "per_center":
+            deltas = _per_center_deltas(centers, delta_default=delta_default)
+        elif delta_mode == "per_theta":
+            delta_theta = _per_theta_delta(centers, delta_default=delta_default)
+            deltas = np.full((centers.shape[0],), delta_theta, dtype=float)
+        else:
+            raise NotImplementedError(f"delta_mode={delta_mode} not implemented")
 
         if method_u == "uniform":
             U_rand = rng.uniform(lo, hi, size=(n_far, 2)).astype(np.float32)
@@ -281,8 +310,6 @@ def gen_data(
                 # fallback to uniform samples if solver returns none
                 U_all = rng.uniform(lo, hi, size=(n_far, 2)).astype(np.float32)
             else:
-                deltas = _per_center_deltas(centers, delta_default=delta_default)
-
                 local_pts = []
                 for k in range(centers.shape[0]):
                     ratio = float(deltas[k] / delta_default)
@@ -297,7 +324,7 @@ def gen_data(
         else:
             raise NotImplementedError(f"method_u={method_u} not implemented")
 
-        phi = Phi_theta(U_all, centers, delta_default=delta_default)
+        phi = Phi_theta(U_all, centers, deltas=deltas, delta_default=delta_default)
 
         Theta_rep = np.repeat(obs["Theta"][None, :], U_all.shape[0], axis=0)
 
@@ -327,9 +354,18 @@ if __name__ == "__main__":
     if cfg_path:
         cfg = load_yaml(cfg_path)
 
+    global_seed = int(cfg_get(cfg, "seed", 123))
     dg = cfg_get(cfg, "data_generation", {})
-    theta_bounds = np.asarray(cfg_get(dg, "domain.theta_bounds", Omega), dtype=float)
-    u_bounds = np.asarray(cfg_get(dg, "domain.u_bounds", D), dtype=float)
+    theta_bounds_raw = cfg_get(dg, "domain.theta_bounds", None)
+    u_bounds_raw = cfg_get(dg, "domain.u_bounds", None)
+    if theta_bounds_raw is None or u_bounds_raw is None:
+        raise ValueError("config must define data_generation.domain.theta_bounds and data_generation.domain.u_bounds")
+    theta_bounds = np.asarray(theta_bounds_raw, dtype=float)
+    u_bounds = np.asarray(u_bounds_raw, dtype=float)
+    if theta_bounds.shape != (4, 2):
+        raise ValueError(f"theta_bounds must have shape (4,2), got {theta_bounds.shape}")
+    if u_bounds.shape != (2, 2):
+        raise ValueError(f"u_bounds must have shape (2,2), got {u_bounds.shape}")
 
     train_cfg = cfg_get(dg, "train", {})
     test_cfg = cfg_get(dg, "test", {})
@@ -340,23 +376,25 @@ if __name__ == "__main__":
 
     data_train_phi, Obs_train = gen_data(
         cfg_get(train_cfg, "N_obs", 1200),
-        seed=cfg_get(train_cfg, "seed", 123),
+        seed=global_seed,
         method_theta=cfg_get(train_cfg, "method_theta", "uniform"),
         method_u=cfg_get(train_cfg, "method_u", "resample"),
         n_local_base=cfg_get(train_cfg, "n_local_base", 60),
         n_far=cfg_get(train_cfg, "n_far", 100),
         delta_default=cfg_get(train_cfg, "delta_default", 0.25),
+        delta_mode=cfg_get(train_cfg, "delta_mode", "per_center"),
         theta_bounds=theta_bounds,
         u_bounds=u_bounds,
     )
     data_test_phi, Obs_test = gen_data(
         cfg_get(test_cfg, "N_obs", 600),
-        seed=cfg_get(test_cfg, "seed", 456),
+        seed=global_seed + 1,
         method_theta=cfg_get(test_cfg, "method_theta", "uniform"),
         method_u=cfg_get(test_cfg, "method_u", "resample"),
         n_local_base=cfg_get(test_cfg, "n_local_base", 60),
         n_far=cfg_get(test_cfg, "n_far", 100),
         delta_default=cfg_get(test_cfg, "delta_default", 0.25),
+        delta_mode=cfg_get(test_cfg, "delta_mode", "per_center"),
         theta_bounds=theta_bounds,
         u_bounds=u_bounds,
     )

@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import torch
+torch.set_float32_matmul_precision("high")
 import numpy as np
 import random
 
@@ -33,11 +34,12 @@ def run_feedback_loop(
 ):
 	"""Train a PSNN to learn Phi(theta, u) for the feedback-loop example."""
 
-	import torch
 	from psnn import nets, datasets
 	from psnn.trainer import train_model
 
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+	print("device:", device)
+
 
 	train_loader, test_loader = datasets.make_loaders(
 		train_npz,
@@ -60,6 +62,12 @@ def run_feedback_loop(
 		depth=list(depth),
 		eta=eta,
 	).to(device)
+	model = torch.compile(model)
+
+	print("model device:", next(model.parameters()).device)
+
+	Theta, U, Phi = next(iter(train_loader))
+	print("batch devices:", Theta.device, U.device, Phi.device)
 
 	train_model(
 		model,
@@ -90,7 +98,6 @@ def train_count_classifier(
 	lr=1e-3,
 	device=None,
 ):
-	import torch
 	from psnn import nets, datasets
 	from psnn.trainer import train_model
 
@@ -237,8 +244,18 @@ def main():
 	if cfg_path:
 		cfg = load_yaml(cfg_path)
 
+	global_seed = int(cfg_get(cfg, "seed", 123))
 	tr = cfg_get(cfg, "training", {})
 	paths = cfg_get(tr, "paths", {})
+
+	def _set_all_seeds(seed: int):
+		torch.manual_seed(seed)
+		np.random.seed(seed)
+		random.seed(seed)
+		if torch.cuda.is_available():
+			torch.cuda.manual_seed_all(seed)
+
+	_set_all_seeds(global_seed)
 
 	data_dir = resolve_path(exp_dir, cfg_get(paths, "data_dir", "data"))
 	out_dir = resolve_path(exp_dir, cfg_get(paths, "out_dir", "."))
@@ -268,14 +285,11 @@ def main():
 
 	num_workers = int(cfg_get(tr, "num_workers", 0))
 
+	print(f"Using device: {device}")
+
 	if bool(cfg_get(tr, "phi.enabled", False)):
 		phi_batch_size = int(cfg_get(tr, "phi.batch_size", 256))
-		phi_seed = int(cfg_get(tr, "phi.seed", 123))
-		torch.manual_seed(phi_seed)
-		np.random.seed(phi_seed)
-		random.seed(phi_seed)
-		if torch.cuda.is_available():
-			torch.cuda.manual_seed_all(phi_seed)
+		_set_all_seeds(global_seed)
 		print("Training Phi model...")
 		run_feedback_loop(
 			train_npz=str(train_npz),
@@ -299,12 +313,7 @@ def main():
 	if bool(cfg_get(tr, "count.enabled", True)) and os.path.exists(obs_train_pkl) and os.path.exists(obs_test_pkl):
 		print("Training count classifier (Theta -> #solutions)...")
 		count_batch_size = int(cfg_get(tr, "count.batch_size", 256))
-		count_seed = int(cfg_get(tr, "count.seed", 123))
-		torch.manual_seed(count_seed)
-		np.random.seed(count_seed)
-		random.seed(count_seed)
-		if torch.cuda.is_available():
-			torch.cuda.manual_seed_all(count_seed)
+		_set_all_seeds(global_seed)
 		count_train_loader, count_test_loader = datasets.make_obs_loaders(
 			str(obs_train_pkl),
 			str(obs_test_pkl),
@@ -347,12 +356,7 @@ def main():
 	if bool(cfg_get(tr, "stability_classifier.enabled", True)) and os.path.exists(obs_train_pkl) and os.path.exists(obs_test_pkl):
 		print("Training stability classifier (Theta, U -> stable)...")
 		stab_batch_size = int(cfg_get(tr, "stability_classifier.batch_size", 256))
-		stab_seed = int(cfg_get(tr, "stability_classifier.seed", 123))
-		torch.manual_seed(stab_seed)
-		np.random.seed(stab_seed)
-		random.seed(stab_seed)
-		if torch.cuda.is_available():
-			torch.cuda.manual_seed_all(stab_seed)
+		_set_all_seeds(global_seed)
 		stab_train_loader, stab_test_loader = datasets.make_obs_loaders(
 			str(obs_train_pkl),
 			str(obs_test_pkl),

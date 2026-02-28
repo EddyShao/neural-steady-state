@@ -24,7 +24,6 @@ if repo_root not in sys.path:
 from psnn import datasets, nets
 from psnn.config import cfg_get, load_yaml, resolve_path
 from exps.feedback_loop.data.gen_feedback_loop import U as true_U
-from amr_wc import adaptive_refinement
 
 
 def make_u_grid(m: int = 200, lo: float = 0.0, hi: float = 5.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -250,6 +249,196 @@ def score_phi_points(
 	return scores_t.detach().cpu().numpy()
 
 
+def _amr_sort_centers(centers: np.ndarray) -> np.ndarray:
+	return centers[np.lexsort((centers[:, 1], centers[:, 0]))]
+
+
+def _amr_match_centers(prev_centers: np.ndarray, new_centers: np.ndarray) -> np.ndarray:
+	"""Greedy center matching to avoid depending on scipy or external AMR modules."""
+	if prev_centers.shape != new_centers.shape:
+		return new_centers
+	matched = np.zeros_like(new_centers)
+	used = set()
+	for i in range(prev_centers.shape[0]):
+		dists = np.linalg.norm(new_centers - prev_centers[i], axis=1)
+		for j in np.argsort(dists).tolist():
+			if j not in used:
+				matched[i] = new_centers[j]
+				used.add(j)
+				break
+	return matched
+
+
+def _amr_uniform_sampling(D, N):
+	low = np.array([D[i][0] for i in range(len(D))], dtype=float)
+	high = np.array([D[i][1] for i in range(len(D))], dtype=float)
+	return np.random.uniform(low=low, high=high, size=(int(N), len(D)))
+
+
+def _amr_uniform_ball_sampling(center: np.ndarray, radius: float, N: int) -> np.ndarray:
+	dim = len(center)
+	directions = np.random.randn(int(N), dim)
+	norm = np.linalg.norm(directions, axis=1, keepdims=True)
+	norm = np.maximum(norm, 1e-12)
+	directions = directions / norm
+	radii = np.random.rand(int(N), 1) ** (1.0 / dim)
+	return center + directions * (radii * float(radius))
+
+
+def _amr_clamp_to_domain(points: np.ndarray, D) -> np.ndarray:
+	P = points.copy()
+	for j in range(P.shape[1]):
+		P[:, j] = np.clip(P[:, j], D[j][0], D[j][1])
+	return P
+
+
+def _amr_make_grid(D, m: int) -> np.ndarray:
+	x = np.linspace(D[0][0], D[0][1], int(m))
+	y = np.linspace(D[1][0], D[1][1], int(m))
+	xx, yy = np.meshgrid(x, y)
+	return np.vstack([xx.ravel(), yy.ravel()]).T
+
+
+def _amr_build_boxes(centers: np.ndarray, base_radius: float):
+	return [
+		[c[0] - base_radius, c[0] + base_radius, c[1] - base_radius, c[1] + base_radius]
+		for c in centers
+	]
+
+
+def _amr_merge_boxes(boxes):
+	merged = []
+	for box in boxes:
+		merged_flag = False
+		for i, cur in enumerate(merged):
+			if not (box[1] < cur[0] or box[0] > cur[1] or box[3] < cur[2] or box[2] > cur[3]):
+				merged[i] = [
+					min(box[0], cur[0]),
+					max(box[1], cur[1]),
+					min(box[2], cur[2]),
+					max(box[3], cur[3]),
+				]
+				merged_flag = True
+				break
+		if not merged_flag:
+			merged.append(list(box))
+	return merged
+
+
+def _amr_refine_boxes(boxes, m_local: int, D):
+	pts_all = []
+	for box in boxes:
+		D_local = [
+			[max(box[0], D[0][0]), min(box[1], D[0][1])],
+			[max(box[2], D[1][0]), min(box[3], D[1][1])],
+		]
+		pts_all.append(_amr_make_grid(D_local, m_local))
+	return np.vstack(pts_all) if pts_all else np.empty((0, 2))
+
+
+def _amr_compute_ball_radii(centers: np.ndarray, r_default: float, radius_scale: float) -> np.ndarray:
+	if len(centers) <= 1:
+		return np.array([r_default], dtype=float)
+	radii = np.zeros(len(centers), dtype=float)
+	for i in range(len(centers)):
+		dists = np.linalg.norm(centers - centers[i], axis=1)
+		dists[i] = np.inf
+		radii[i] = radius_scale * np.min(dists)
+		if not np.isfinite(radii[i]) or radii[i] <= 0:
+			radii[i] = r_default
+	return radii
+
+
+def adaptive_refinement(
+	f,
+	D,
+	expected_k,
+	method="grid",
+	L_cut=0.3,
+	max_iter=12,
+	tol=1e-4,
+	plot_each_iter=False,
+	random_state=0,
+	m0=12,
+	m_growth=1.5,
+	m_local=60,
+	base_radius=0.4,
+	N_global=2000,
+	N_local=1000,
+	r_default=0.3,
+	radius_scale=0.45,
+	global_refill_factor=1.5,
+):
+	"""ALGORITHM-DEPENDENT: local copy of the adaptive refinement peak finder.
+
+	This block is intentionally kept in this file so the locator does not depend
+	on `amr_wc.py`. If the refinement strategy changes, update this function and
+	its `_amr_*` helpers together.
+	"""
+	np.random.seed(int(random_state))
+	method = str(method).lower().strip()
+	if method not in ("grid", "random"):
+		raise ValueError("method must be 'grid' or 'random'.")
+
+	centers_prev = None
+	if method == "grid":
+		m_global = int(m0)
+		pts = _amr_make_grid(D, m_global)
+		scores = f(pts)
+	else:
+		pts = _amr_uniform_sampling(D, N_global)
+		scores = f(pts)
+
+	for _ in range(int(max_iter)):
+		collected = pts[scores >= float(L_cut)]
+
+		if len(collected) < int(expected_k):
+			if method == "grid":
+				m_global = max(m_global + 1, int(np.ceil(m_global * float(m_growth))))
+				pts = _amr_make_grid(D, m_global)
+				scores = f(pts)
+				centers_prev = None
+			else:
+				addN = max(200, int(np.ceil(len(pts) * (float(global_refill_factor) - 1.0))))
+				new_pts = _amr_uniform_sampling(D, addN)
+				new_scores = f(new_pts)
+				pts = np.vstack([pts, new_pts])
+				scores = np.concatenate([scores, new_scores])
+			continue
+
+		km = KMeans(n_clusters=int(expected_k), n_init=20, random_state=int(random_state)).fit(collected)
+		centers = _amr_sort_centers(km.cluster_centers_)
+
+		if centers_prev is not None:
+			centers = _amr_match_centers(centers_prev, centers)
+			movement = np.max(np.linalg.norm(centers - centers_prev, axis=1))
+			if movement < float(tol):
+				return centers
+
+		if plot_each_iter:
+			pass
+
+		if method == "grid":
+			boxes = _amr_build_boxes(centers, float(base_radius))
+			refined_pts = _amr_refine_boxes(_amr_merge_boxes(boxes), int(m_local), D)
+		else:
+			radii = _amr_compute_ball_radii(centers, float(r_default), float(radius_scale))
+			refined_pts_list = []
+			for c, r in zip(centers, radii):
+				p = _amr_uniform_ball_sampling(c, r, int(N_local))
+				refined_pts_list.append(_amr_clamp_to_domain(p, D))
+			refined_pts = np.vstack(refined_pts_list) if refined_pts_list else np.empty((0, 2))
+
+		if len(refined_pts) > 0:
+			refined_scores = f(refined_pts)
+			pts = np.vstack([pts, refined_pts])
+			scores = np.concatenate([scores, refined_scores])
+
+		centers_prev = centers
+
+	return centers_prev if centers_prev is not None else np.empty((0, 2))
+
+
 def locate_solutions_for_theta_adaptive(
 	phi_model: torch.nn.Module,
 	theta: np.ndarray,
@@ -272,6 +461,7 @@ def locate_solutions_for_theta_adaptive(
 	amr_r_default: float = 0.3,
 	amr_radius_scale: float = 0.45,
 ) -> np.ndarray:
+	"""ALGORITHM-DEPENDENT: adaptive solution localization for the feedback-loop locator."""
 	if expected_count <= 0:
 		return np.empty((0, 2), dtype=float)
 

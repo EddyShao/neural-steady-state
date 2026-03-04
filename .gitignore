@@ -3,3 +3,9 @@
 *.pt
 meeting.md
 archive/
+__pycache__/
+*.py[cod]
+*$py.class
+logs/
+*/__pycache__/
+**/__pycache__/

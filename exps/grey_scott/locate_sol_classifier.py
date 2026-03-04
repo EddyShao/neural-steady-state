@@ -31,38 +31,82 @@ def make_u_grid(m: int = 100) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return U_all, v_axis, u_axis
 
 
-def infer_eta_from_npz(train_npz: str, device: torch.device) -> float:
-    train_loader, _ = datasets.make_loaders(
-        train_npz,
-        train_npz,
-        batch_size=1024,
-        num_workers=0,
-        device=device,
-    )
-    eta = 1.5 * (train_loader.dataset.Phi.max() - 1.0)
-    return min(float(eta), 0.01)
+def _load_torch_checkpoint(path: str, device: torch.device):
+    try:
+        return torch.load(path, map_location=device, weights_only=True)
+    except TypeError:  # older torch
+        return torch.load(path, map_location=device)
 
 
-def load_phi_model(phi_ckpt: str, train_npz: str, device: torch.device) -> torch.nn.Module:
-    eta = infer_eta_from_npz(train_npz, device)
-    model = nets.PSNN(
-        dim_theta=2,
-        dim_u=2,
-        embed_dim=8,
-        width=[30, 20],
-        depth=[4, 3],
-        eta=eta,
-    ).to(device)
-    model.load_state_dict(torch.load(phi_ckpt, map_location=device))
+def _ckpt_get_state_dict(ckpt):
+    if isinstance(ckpt, dict) and "state_dict" in ckpt:
+        return ckpt["state_dict"]
+    return ckpt
+
+
+def load_phi_model(phi_ckpt: str, device: torch.device, train_npz: str | None = None) -> torch.nn.Module:
+    ckpt = _load_torch_checkpoint(phi_ckpt, device)
+    state_dict = _ckpt_get_state_dict(ckpt)
+
+    model_meta = ckpt.get("model", None) if isinstance(ckpt, dict) else None
+    eta_in_ckpt = model_meta.get("eta", None) if isinstance(model_meta, dict) else None
+    if isinstance(model_meta, dict) and eta_in_ckpt is not None:
+        eta = float(eta_in_ckpt)
+        model = nets.PSNN(
+            dim_theta=int(model_meta.get("dim_theta", 2)),
+            dim_u=int(model_meta.get("dim_u", 2)),
+            embed_dim=int(model_meta.get("embed_dim", 8)),
+            width=list(model_meta.get("width", [30, 20])),
+            depth=list(model_meta.get("depth", [4, 3])),
+            eta=eta,
+        ).to(device)
+    else:
+        raise ValueError(
+            "Phi checkpoint is missing eta metadata. Re-train to generate a metadata-rich checkpoint."
+        )
+
+    try:
+        model.load_state_dict(state_dict)
+    except RuntimeError as exc:
+        # Metadata may be stale; fall back to inferring eta from npz (or use ckpt eta if present)
+        if not (isinstance(model_meta, dict) and model_meta.get("eta", None) is not None):
+            raise exc
+        eta_fallback = float(model_meta.get("eta"))
+
+        p_in, p_w, p_d, p_out = _infer_mlp_shape(state_dict, "pnn.net")
+        s_in, s_w, s_d, s_out = _infer_mlp_shape(state_dict, "snn.net")
+        if p_out != s_out:
+            raise ValueError(f"PSNN embed_dim mismatch: pnn_out={p_out}, snn_out={s_out}") from exc
+
+        model = nets.PSNN(
+            dim_theta=p_in,
+            dim_u=s_in,
+            embed_dim=p_out,
+            width=[p_w, s_w],
+            depth=[p_d, s_d],
+            eta=float(eta_fallback),
+        ).to(device)
+        model.load_state_dict(state_dict)
     model.eval()
     return model
 
 
-def _infer_mlp_shape(state_dict: dict) -> tuple[int, int, int]:
-    linear_keys = [k for k in state_dict.keys() if k.endswith(".weight") and ".net." in k]
+def phi_ckpt_has_eta(phi_ckpt: str, device: torch.device) -> bool:
+    ckpt = _load_torch_checkpoint(phi_ckpt, device)
+    if not isinstance(ckpt, dict):
+        return False
+    model_meta = ckpt.get("model", None)
+    return isinstance(model_meta, dict) and (model_meta.get("eta", None) is not None)
+
+
+def _infer_mlp_shape(state_dict: dict, prefix: str | None = None) -> tuple[int, int, int, int]:
+    if prefix is None:
+        linear_keys = [k for k in state_dict.keys() if k.endswith(".weight") and ".net." in k]
+    else:
+        linear_keys = [k for k in state_dict.keys() if k.startswith(prefix) and k.endswith(".weight")]
     linear_keys = sorted(linear_keys, key=lambda k: int(k.split(".")[-2]))
     if not linear_keys:
-        raise ValueError("No linear weights found in count classifier state_dict.")
+        raise ValueError(f"No linear weights found for prefix={prefix}")
 
     first_w = state_dict[linear_keys[0]]
     last_w = state_dict[linear_keys[-1]]
@@ -75,31 +119,76 @@ def _infer_mlp_shape(state_dict: dict) -> tuple[int, int, int]:
 
 
 def load_count_classifier(count_ckpt: str, device: torch.device) -> tuple[torch.nn.Module, int]:
-    ckpt = torch.load(count_ckpt, map_location=device)
+    ckpt = _load_torch_checkpoint(count_ckpt, device)
     if isinstance(ckpt, dict) and "state_dict" in ckpt:
         state_dict = ckpt["state_dict"]
         num_classes = int(ckpt.get("num_classes", 2))
+        model_meta = ckpt.get("model", None)
     else:
         state_dict = ckpt
         num_classes = 2
-    in_dim, width, depth, out_dim = _infer_mlp_shape(state_dict)
+        model_meta = None
+
+    if isinstance(model_meta, dict):
+        in_dim = int(model_meta.get("dim_theta", 2))
+        num_classes = int(model_meta.get("num_classes", num_classes))
+        width = int(model_meta.get("width", 256))
+        depth = int(model_meta.get("depth", 3))
+        out_dim = int(num_classes)
+    else:
+        in_dim, width, depth, out_dim = _infer_mlp_shape(state_dict)
+        num_classes = out_dim
     print(f"Loaded count classifier: in_dim={in_dim}, width={width}, depth={depth}, out_dim={out_dim}")
-    num_classes = out_dim
+
     model = nets.ThetaCountClassifier(dim_theta=in_dim, num_classes=num_classes, width=width, depth=depth).to(device)
-    model.load_state_dict(state_dict)
+    try:
+        model.load_state_dict(state_dict)
+    except RuntimeError:
+        in_dim, width, depth, out_dim = _infer_mlp_shape(state_dict, "net.net")
+        num_classes = out_dim
+        model = nets.ThetaCountClassifier(dim_theta=in_dim, num_classes=num_classes, width=width, depth=depth).to(device)
+        model.load_state_dict(state_dict)
     model.eval()
     return model, num_classes
 
 
 def load_stability_classifier(stab_ckpt: str, device: torch.device) -> torch.nn.Module:
-    model = nets.StabilityClassifier(
-        dim_theta=2,
-        dim_u=2,
-        embed_dim=8,
-        width=[64, 64],
-        depth=[2, 2],
-    ).to(device)
-    model.load_state_dict(torch.load(stab_ckpt, map_location=device))
+    ckpt = _load_torch_checkpoint(stab_ckpt, device)
+    state_dict = _ckpt_get_state_dict(ckpt)
+    model_meta = ckpt.get("model", None) if isinstance(ckpt, dict) else None
+
+    if isinstance(model_meta, dict):
+        model = nets.StabilityClassifier(
+            dim_theta=int(model_meta.get("dim_theta", 2)),
+            dim_u=int(model_meta.get("dim_u", 2)),
+            embed_dim=int(model_meta.get("embed_dim", 8)),
+            width=list(model_meta.get("width", [64, 64])),
+            depth=list(model_meta.get("depth", [2, 2])),
+        ).to(device)
+    else:
+        model = nets.StabilityClassifier(
+            dim_theta=2,
+            dim_u=2,
+            embed_dim=8,
+            width=[64, 64],
+            depth=[2, 2],
+        ).to(device)
+
+    try:
+        model.load_state_dict(state_dict)
+    except RuntimeError:
+        theta_in, theta_w, theta_d, theta_out = _infer_mlp_shape(state_dict, "theta_net.net")
+        u_in, u_w, u_d, u_out = _infer_mlp_shape(state_dict, "u_net.net")
+        if theta_out != u_out:
+            raise ValueError(f"Stability embed_dim mismatch: theta_out={theta_out}, u_out={u_out}")
+        model = nets.StabilityClassifier(
+            dim_theta=theta_in,
+            dim_u=u_in,
+            embed_dim=theta_out,
+            width=[theta_w, u_w],
+            depth=[theta_d, u_d],
+        ).to(device)
+        model.load_state_dict(state_dict)
     model.eval()
     return model
 
@@ -289,12 +378,17 @@ def main():
     if not os.path.exists(phi_ckpt) and os.path.exists(compat_ckpt):
         phi_ckpt = compat_ckpt
 
-    for path in (train_npz, phi_ckpt, count_ckpt, stab_ckpt):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Only require the training npz for legacy Phi checkpoints (to infer eta).
+    for path in (phi_ckpt, count_ckpt, stab_ckpt):
         if not os.path.exists(path):
             raise FileNotFoundError(f"Missing required file: {path}")
+    if not phi_ckpt_has_eta(str(phi_ckpt), device):
+        if not os.path.exists(train_npz):
+            raise FileNotFoundError(f"Missing required file (needed to infer eta for legacy Phi checkpoint): {train_npz}")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    phi_model = load_phi_model(phi_ckpt, train_npz, device)
+    phi_model = load_phi_model(str(phi_ckpt), device=device, train_npz=str(train_npz) if os.path.exists(train_npz) else None)
     count_model, num_classes = load_count_classifier(count_ckpt, device)
     stab_model = load_stability_classifier(stab_ckpt, device)
 

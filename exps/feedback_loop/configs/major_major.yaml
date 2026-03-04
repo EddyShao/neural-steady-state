@@ -1,0 +1,7 @@
+inherits: ../base.yaml
+
+run:
+  variant: major_major
+
+data_generation:
+  corruption_rate: 0.4

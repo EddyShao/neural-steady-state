@@ -1,0 +1,7 @@
+inherits: minor.yaml
+
+run:
+  variant: major
+
+data_generation:
+  corruption_rate: 0.2

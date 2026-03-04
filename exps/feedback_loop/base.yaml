@@ -1,31 +1,34 @@
 experiment: feedback_loop
-seed: 123
+seed: 42
 
 data_generation:
-  # Domain for u=(p1,p2) and theta=(alpha1, alpha2, gamma1, gamma2)
   domain:
     u_bounds:
-      - [0.0, 5.0]
-      - [0.0, 5.0]
+      - [-1.0, 6.0]
+      - [-1.0, 6.0]
     theta_bounds:
       - [1.0, 5.0]
       - [1.0, 5.0]
       - [0.1, 0.3]
       - [0.1, 0.3]
   train:
-    N_obs: 1200
+    N_obs: 9600
+    delta_mode: per_theta
     method_theta: uniform
     method_u: resample
-    n_local_base: 60
-    n_far: 100
+    n_local_base: 100
+    n_far: 200
     delta_default: 0.25
+    delta_min: 0.01
   test:
-    N_obs: 600
+    N_obs: 2400
     method_theta: uniform
     method_u: resample
-    n_local_base: 60
-    n_far: 100
+    delta_mode: per_theta
+    n_local_base: 100
+    n_far: 200
     delta_default: 0.25
+    delta_min: 0.01
   outputs:
     out_dir: data
     data_train_npz: feedback_loop_data_train.npz
@@ -37,9 +40,9 @@ training:
   device: auto
   num_workers: 0
   phi:
-    enabled: false
-    batch_size: 1024
-    epochs: 50
+    enabled: true
+    batch_size: 2048
+    epochs: 75
     lr: 1e-3
     model:
       embed_dim: 10
@@ -47,7 +50,7 @@ training:
       depth: [2, 3]
     eta:
       scale: 1.5
-      cap: 0.01
+      cap: 0.1
   count:
     enabled: true
     batch_size: 512
@@ -65,46 +68,6 @@ training:
       embed_dim: 10
       width: [64, 64]
       depth: [2, 2]
-  paths:
-    data_dir: data
-    out_dir: .
-    phi_ckpt: psnn_phi.pt
-    count_ckpt: psnn_numsol.pt
-    stability_ckpt: psnn_stability_cls.pt
-
-postprocessing:
-  locate:
-    m: 400
-    lo: 0.0
-    hi: 5.0
-    locate_mode: fixed
-    L_cut: null
-    amr:
-      method: grid
-      random_state: 0
-      max_iter: 12
-      tol: 1.0e-4
-      m0: 12
-      m_growth: 1.5
-      m_local: 60
-      base_radius: 0.4
-      N_global: 2000
-      N_local: 1000
-      r_default: 0.3
-      radius_scale: 0.45
-    theta: null
-    bifurcation: false
-    true_bifurcation: false
-    alpha1: 4.0
-    gamma1: 0.2
-    gamma2: 0.2
-    alpha2_min: 2.0
-    alpha2_max: 3.0
-    alpha2_steps: 101
-    obs: null
-    obs_index: 0
-    no_plot: false
-    save_fig: null
   paths:
     data_dir: data
     out_dir: .

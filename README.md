@@ -43,6 +43,8 @@ The following 3 networks are trained independently.
 ### Feedback loop
 - Data generation: `python exps/feedback_loop/data/gen_feedback_loop.py`
 - Training (PSNN + stability + count): `python exps/feedback_loop/train.py`
+- Bifurcation plotting: `python exps/feedback_loop/run_bifur.py --config configs/major.yaml --seed 42 --mode strict -- --L-cut 0.35`
+- Test-observation evaluation: `python exps/feedback_loop/run_eval.py --config configs/major.yaml --seed 42 --mode strict -- --device cpu`
 
 ## Configuration (YAML)
 All experiment hyperparameters are collected in YAML config files:
@@ -60,6 +62,7 @@ default config in the experiment directory when present.
 - `psnn_phi.pt`: PSNN weights (Phi landscape).
 - `psnn_numsol.pt`: solution-count classifier.
 - `psnn_stability_cls.pt`: stability classifier.
+- feedback-loop evaluation outputs: JSON metrics and NPZ per-theta details under `test_observation_eval_strict/` or `test_observation_eval_flexible/`.
 
 ## Notes
 - If you change model widths/depths during training, load scripts infer shapes from checkpoints when needed.

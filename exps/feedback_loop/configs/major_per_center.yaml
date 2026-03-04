@@ -1,0 +1,7 @@
+inherits: minor_per_center.yaml
+
+run:
+  variant: major_per_center
+
+data_generation:
+  corruption_rate: 0.2

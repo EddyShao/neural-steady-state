@@ -9,3 +9,5 @@ __pycache__/
 logs/
 */__pycache__/
 **/__pycache__/
+venv/
+.DS_Store

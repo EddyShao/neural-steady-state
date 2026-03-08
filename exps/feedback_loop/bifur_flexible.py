@@ -39,7 +39,7 @@ from psnn.loaders import load_inference_functions
 from psnn.config import cfg_get, load_yaml, resolve_path
 
 # Reuse the adaptive locator (kept as a single standalone file at repo root).
-from locater_flexible import adaptive_peak_detection
+from locater.flexible import adaptive_peak_detection
 
 from exps.feedback_loop.gen_data import U as true_U
 

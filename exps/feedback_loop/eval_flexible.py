@@ -19,7 +19,7 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from exps.feedback_loop.eval_common import aggregate_evaluation_results, evaluate_observations, load_observations, load_true_solutions, save_outputs
-from locater_flexible import adaptive_peak_detection
+from locater.flexible import adaptive_peak_detection
 from psnn.config import cfg_get, load_yaml, resolve_path
 from psnn.loaders import load_inference_functions
 

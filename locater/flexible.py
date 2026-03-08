@@ -1,16 +1,6 @@
-#!/usr/bin/env python
 """Flexible locater runner (single-theta).
 
-This file is intentionally standalone and does NOT modify the algorithm implementation
-inside exps/feedback_loop/locate_sol_flexible.py.
-
-Usage example:
-  python locater_flexible.py --phi-ckpt exps/feedback_loop/psnn_phi.pt --theta 4.0 1.9 0.6 0.2
-
-Outputs:
-- Prints the centers found at each adaptive step (verbose).
-- Prints the final number of centers.
-- Saves a visualization PNG under a timestamped folder.
+This module used to live at the repository top-level as locater_flexible.py.
 """
 
 from __future__ import annotations
@@ -63,7 +53,7 @@ def uniform_sampling(D: list[list[float]], N: int, rng: np.random.Generator) -> 
 
 
 def grid_ball_sampling(center: np.ndarray, radius: float, m: int) -> np.ndarray:
-    """Grid sampling within a box-shaped (\ell^1) ball around a center point."""
+    r"""Grid sampling within a box-shaped (\ell^1) ball around a center point."""
     dim = int(center.shape[0])
     grids = [np.linspace(center[i] - radius, center[i] + radius, m) for i in range(dim)]
     mesh = np.meshgrid(*grids)
@@ -84,12 +74,80 @@ def uniform_ball_sampling(center: np.ndarray, radius: float, N: int, rng: np.ran
     return center.reshape(1, -1) + directions * (radii * float(radius))
 
 
-def cluster_points(points: np.ndarray, C_max: int = 5, random_state: int = 0) -> tuple[np.ndarray, np.ndarray]:
+def valley_between(c1, c2, f, n_samples=100, eps=1e-3):
+    t = np.linspace(0, 1, n_samples + 2)[1:-1]
+
+    pts = (1 - t)[:, None] * c1 + t[:, None] * c2
+    vals = f(pts)
+
+    peak_val = min(f(c1[None, :])[0], f(c2[None, :])[0])
+
+    return np.mean(vals) < peak_val - eps
+
+
+def merge_centers(points, centers, labels, valley_eps=1e-3, f=None):
+
+    centers = centers.copy()
+    labels = labels.copy()
+
+    K = len(centers)
+
+    keep = np.ones(K, dtype=bool)
+
+    for i in range(K):
+        if not keep[i]:
+            continue
+
+        for j in range(i + 1, K):
+            if not keep[j]:
+                continue
+
+            if f is None:
+                continue
+
+            has_valley = valley_between(
+                centers[i],
+                centers[j],
+                f,
+                eps=valley_eps,
+            )
+
+            # merge if NO valley
+            if not has_valley:
+                labels[labels == j] = i
+                keep[j] = False
+
+    # compress labels
+    unique = np.unique(labels)
+    label_map = {old: new for new, old in enumerate(unique)}
+
+    labels_new = np.array([label_map[l] for l in labels])
+
+    # recompute centers and radii
+    centers_new = []
+    radii_new = []
+
+    for j in range(len(unique)):
+        mask = labels_new == j
+        cluster_pts = points[mask]
+
+        c = np.mean(cluster_pts, axis=0)
+        r = np.max(np.linalg.norm(cluster_pts - c, axis=1))
+
+        centers_new.append(c)
+        radii_new.append(r)
+
+    centers_new = np.asarray(centers_new)
+    radii_new = np.asarray(radii_new)
+
+    return centers_new, radii_new, labels_new
+
+
+def cluster_points(points: np.ndarray, C_max: int = 5, random_state: int = 0, f=None) -> tuple[np.ndarray, np.ndarray]:
     """Cluster high-score points and return (centers, radii).
 
     Radii are per-center, computed as the max distance from the center to its assigned points.
     """
-
 
     n = len(points)
     if n <= 2:
@@ -131,18 +189,7 @@ def cluster_points(points: np.ndarray, C_max: int = 5, random_state: int = 0) ->
     best_k = max(scores, key=lambda kk: scores[kk][0])
     _, centers, labels = scores[best_k]
 
-    # ---- compute per-cluster radii ----
-    radii = []
-    for j in range(len(centers)):
-        mask = labels == j
-        if not np.any(mask):
-            radii.append(0.0)
-            continue
-        cluster_pts = points[mask]
-        r = np.max(np.linalg.norm(cluster_pts - centers[j], axis=1))
-        radii.append(float(r))
-
-    radii = np.asarray(radii)
+    centers, radii, labels = merge_centers(points, centers, labels, valley_eps=1e-3, f=f)
 
     return centers, radii
 
@@ -207,7 +254,7 @@ def adaptive_peak_detection(
             print("[init] collected=0 -> no centers")
         return np.empty((0, dim), dtype=np.float32), np.empty((0, dim), dtype=np.float32), [], []
 
-    init_centers, radii = cluster_points(collected, C_max, random_state=random_state)
+    init_centers, radii = cluster_points(collected, C_max, random_state=random_state, f=f)
     # Queue items are (center, radius, budget, flags, layer)
     queue: deque[tuple[np.ndarray, float, int, list[bool], int]] = deque()
     # Local sampling reuses the *global* budget by design.
@@ -286,7 +333,7 @@ def adaptive_peak_detection(
                 )
             continue
 
-        new_centers, new_radii = cluster_points(collected, C_max, random_state=random_state)
+        new_centers, new_radii = cluster_points(collected, C_max, random_state=random_state, f=f)
 
         if len(new_centers) == 1:
             for k in range(len(flags)):

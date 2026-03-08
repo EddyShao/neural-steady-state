@@ -34,7 +34,7 @@ try:
 except Exception:
 	pass
 
-from locater_strict import adaptive_peak_detection_amr
+from locater.strict import adaptive_peak_detection_amr
 from psnn.config import cfg_get, load_yaml, resolve_path
 from psnn.loaders import load_inference_functions
 

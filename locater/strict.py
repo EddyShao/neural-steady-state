@@ -1,36 +1,6 @@
-#!/usr/bin/env python3
 """Flexible locater runner (single-theta) — AMR version with known #clusters.
 
-What this script does
----------------------
-You said you already know the number of clusters `num`, so this file implements:
-
-1) Global sampling on D, collect points with phi(u) >= L_cut, then KMeans with n_clusters=num.
-   This gives initial centers + per-center radii (max assigned-point distance).
-
-2) Local refinement: sample around each current center (grid box or uniform L2-ball).
-   Update each center by the mean of the collected points in that region and update its radius
-   as the max distance from updated center to its collected points.
-
-3) Merge overlaps: if two regions overlap (distance < r1 + r2), merge them into one region,
-   using a metric consistent with the sampling:
-      - ball_method="uniform"  -> L2 metric (true balls)
-      - ball_method="grid"     -> L_infty metric (your grid_ball_sampling is a box)
-   The merged radius is conservative: r_new = d/2 + max(r1, r2).
-
-4) Stop when centers stop moving: sort centers lexicographically and stop when max L2 movement
-   between consecutive iterations is < conv_th.
-
-Outputs
--------
-- Prints centers/radii each iteration.
-- Prints final centers and their "layer" (iteration index when stopped).
-- Saves a 2D contour plot (if D is 2D and --no-plot is not set).
-
-Notes
------
-- This script is intentionally standalone. It does not modify other code.
-- For reproducibility, KMeans uses random_state (default 0).
+This module used to live at the repository top-level as locater_strict.py.
 """
 
 from __future__ import annotations

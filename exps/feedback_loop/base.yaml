@@ -41,7 +41,7 @@ training:
   num_workers: 0
   phi:
     enabled: true
-    batch_size: 2048
+    batch_size: 8192
     epochs: 75
     lr: 1e-3
     model:
@@ -64,7 +64,7 @@ training:
     batch_size: 256
     epochs: 100
     lr: 1.0e-3
-    model:
+    model: 
       embed_dim: 10
       width: [64, 64]
       depth: [2, 2]

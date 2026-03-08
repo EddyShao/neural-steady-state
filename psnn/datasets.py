@@ -27,18 +27,21 @@ class PSNNDataset(Dataset):
         self.U     = torch.from_numpy(U)
         self.Phi   = torch.from_numpy(Phi)[:, None]   # (N,1) for model output alignment
 
-        # Optional: move to device (CPU or CUDA)
-        if device is not None:
-            self.Theta = self.Theta.to(device)
-            self.U     = self.U.to(device)
-            self.Phi   = self.Phi.to(device)
-
     def __len__(self):
         return self.U.shape[0]
 
     def __getitem__(self, idx: int):
-        # Direct tensor indexing—already on device
         return self.U[idx], self.Theta[idx], self.Phi[idx]
+
+    def __getitems__(self, indices):
+        # DataLoader may pass a list of indices for a whole batch.
+        # Return already-batched tensors; DataLoader collate_fn must be identity.
+        return self.U[indices], self.Theta[indices], self.Phi[indices]
+
+
+def _identity_collate(batch):
+    # When Dataset.__getitems__ returns already-batched tensors, bypass default_collate.
+    return batch
 
 
 def make_loaders(train_npz, test_npz, batch_size=1024, num_workers=0, device=None):
@@ -47,10 +50,14 @@ def make_loaders(train_npz, test_npz, batch_size=1024, num_workers=0, device=Non
 
     train_loader = DataLoader(train_ds, batch_size=batch_size,
                               shuffle=True, drop_last=False,
-                              num_workers=num_workers)
+                              num_workers=num_workers,
+                              pin_memory=True,
+                              collate_fn=_identity_collate)
     test_loader  = DataLoader(test_ds, batch_size=batch_size,
                               shuffle=False, drop_last=False,
-                              num_workers=num_workers)
+                              num_workers=num_workers,
+                              pin_memory=True,
+                              collate_fn=_identity_collate)
     return train_loader, test_loader
 
 
@@ -77,16 +84,14 @@ class ThetaCountDataset(Dataset):
         self.ClassValues = torch.from_numpy(class_values.astype(np.int64))
         self.num_classes = int(class_values.shape[0])
 
-        if device is not None:
-            self.Theta = self.Theta.to(device)
-            self.Labels = self.Labels.to(device)
-            self.ClassValues = self.ClassValues.to(device)
-
     def __len__(self):
         return self.Theta.shape[0]
 
     def __getitem__(self, idx: int):
         return self.Theta[idx], self.Labels[idx]
+
+    def __getitems__(self, indices):
+        return self.Theta[indices], self.Labels[indices]
 
 
 class ThetaStabilityDataset(Dataset):
@@ -110,16 +115,14 @@ class ThetaStabilityDataset(Dataset):
         self.U = torch.from_numpy(np.asarray(us, dtype=np.float32))
         self.Labels = torch.from_numpy(np.asarray(labels, dtype=np.int64))
 
-        if device is not None:
-            self.Theta = self.Theta.to(device)
-            self.U = self.U.to(device)
-            self.Labels = self.Labels.to(device)
-
     def __len__(self):
         return self.U.shape[0]
 
     def __getitem__(self, idx: int):
         return self.U[idx], self.Theta[idx], self.Labels[idx]
+
+    def __getitems__(self, indices):
+        return self.U[indices], self.Theta[indices], self.Labels[indices]
 
 
 def make_obs_loaders(train_obs, test_obs, batch_size=1024, num_workers=0, device=None, mode="count"):
@@ -134,8 +137,12 @@ def make_obs_loaders(train_obs, test_obs, batch_size=1024, num_workers=0, device
 
     train_loader = DataLoader(train_ds, batch_size=batch_size,
                               shuffle=True, drop_last=False,
-                              num_workers=num_workers)
+                              num_workers=num_workers,
+                              pin_memory=True,
+                              collate_fn=_identity_collate)
     test_loader = DataLoader(test_ds, batch_size=batch_size,
                              shuffle=False, drop_last=False,
-                             num_workers=num_workers)
+                             num_workers=num_workers,
+                             pin_memory=True,
+                             collate_fn=_identity_collate)
     return train_loader, test_loader

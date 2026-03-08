@@ -8,9 +8,13 @@ import torch
 def eval_phi_model(model, loader, criterion) -> float:
     """Evaluate a Phi regressor (PSNN) on a dataloader."""
     model.eval()
+    device = next(model.parameters()).device
     total = 0.0
     with torch.no_grad():
         for U, Theta, Phi in loader:
+            U = U.to(device, non_blocking=True)
+            Theta = Theta.to(device, non_blocking=True)
+            Phi = Phi.to(device, non_blocking=True)
             pred = model(U, Theta)
             loss = criterion(pred, Phi)
             total += loss.item() * U.size(0)
@@ -39,6 +43,9 @@ def train_phi_model(
         total = 0.0
 
         for U, Theta, Phi in train_loader:
+            U = U.to(device, non_blocking=True)
+            Theta = Theta.to(device, non_blocking=True)
+            Phi = Phi.to(device, non_blocking=True)
             optimizer.zero_grad()
             pred = model(U, Theta)
             loss = criterion(pred, Phi)
@@ -80,10 +87,13 @@ def _make_class_weights(
 def eval_count_classifier(model, loader, criterion) -> Tuple[float, float]:
     """Evaluate a Theta->count classifier."""
     model.eval()
+    device = next(model.parameters()).device
     total_loss = 0.0
     total_acc = 0.0
     with torch.no_grad():
         for Theta, y in loader:
+            Theta = Theta.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
             logits = model(Theta)
             loss = criterion(logits, y)
             total_loss += loss.item() * Theta.size(0)
@@ -128,6 +138,8 @@ def train_count_classifier(
         total_acc = 0.0
 
         for Theta, y in train_loader:
+            Theta = Theta.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
             optimizer.zero_grad()
             logits = model(Theta)
             loss = criterion(logits, y)
@@ -158,10 +170,14 @@ def train_count_classifier(
 def eval_stability_classifier(model, loader, criterion) -> Tuple[float, float]:
     """Evaluate a (Theta,U)->stable classifier."""
     model.eval()
+    device = next(model.parameters()).device
     total_loss = 0.0
     total_acc = 0.0
     with torch.no_grad():
         for U, Theta, y in loader:
+            U = U.to(device, non_blocking=True)
+            Theta = Theta.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
             probs = model(U, Theta).view(-1)
             y_float = y.float()
             loss = criterion(probs, y_float).mean()
@@ -205,6 +221,9 @@ def train_stability_classifier(
         total_acc = 0.0
 
         for U, Theta, y in train_loader:
+            U = U.to(device, non_blocking=True)
+            Theta = Theta.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
             optimizer.zero_grad()
             probs = model(U, Theta).view(-1)
             y_float = y.float()

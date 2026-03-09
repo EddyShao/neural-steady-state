@@ -1,0 +1,7 @@
+inherits: ../base.yaml
+
+run:
+  variant: incomplete_80
+
+data_generation:
+  corruption_rate: 0.8

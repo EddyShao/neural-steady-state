@@ -4,7 +4,7 @@ This experiment now has one canonical directory:
 
 - configs: [configs/](/root/neural-steady-state/exps/feedback_loop/configs)
 - shared defaults: [base.yaml](/root/neural-steady-state/exps/feedback_loop/base.yaml)
-- data generation: [gen_data.py](/root/neural-steady-state/exps/feedback_loop/gen_data.py)
+- data generation: [_gen_data.py](/root/neural-steady-state/exps/feedback_loop/_gen_data.py)
 - training: [run_train.py](/root/neural-steady-state/exps/feedback_loop/run_train.py)
 - bifurcation plotting: [run_bifur.py](/root/neural-steady-state/exps/feedback_loop/run_bifur.py)
 - test-observation evaluation: [run_eval.py](/root/neural-steady-state/exps/feedback_loop/run_eval.py)
@@ -44,7 +44,7 @@ Edit the variant files in [configs/](/root/neural-steady-state/exps/feedback_loo
 Generate data only:
 
 ```bash
-python exps/feedback_loop/gen_data.py --config configs/major.yaml --seed 42
+python exps/feedback_loop/_gen_data.py --config configs/major.yaml --seed 42
 ```
 
 Generate data and train:
@@ -114,8 +114,8 @@ Use CLI args for bifurcation settings such as `--L-cut`, `--alpha1-min`, `--alph
 
 For evaluation:
 
-- `--mode strict` uses the count classifier plus the strict locator in [eval_strict.py](/root/neural-steady-state/exps/feedback_loop/eval_strict.py)
-- `--mode flexible` uses the flexible locator in [eval_flexible.py](/root/neural-steady-state/exps/feedback_loop/eval_flexible.py)
+- `--mode strict` uses the count classifier plus the strict locator in [_eval_strict.py](/root/neural-steady-state/exps/feedback_loop/_eval_strict.py)
+- `--mode flexible` uses the flexible locator in [_eval_flexible.py](/root/neural-steady-state/exps/feedback_loop/_eval_flexible.py)
 - `--limit N` evaluates the first `N` observations
 - `--sample-size N --sample-seed S` evaluates a random subset of `N` observations without replacement
 

@@ -74,7 +74,7 @@ def uniform_ball_sampling(center: np.ndarray, radius: float, N: int, rng: np.ran
     return center.reshape(1, -1) + directions * (radii * float(radius))
 
 
-def valley_between(c1, c2, f, n_samples=100, eps=1e-3):
+def valley_between(c1, c2, f, n_samples=100, ratio=0.9):
     t = np.linspace(0, 1, n_samples + 2)[1:-1]
 
     pts = (1 - t)[:, None] * c1 + t[:, None] * c2
@@ -82,10 +82,10 @@ def valley_between(c1, c2, f, n_samples=100, eps=1e-3):
 
     peak_val = min(f(c1[None, :])[0], f(c2[None, :])[0])
 
-    return np.mean(vals) < peak_val - eps
+    return np.mean(vals) < ratio * peak_val
 
 
-def merge_centers(points, centers, labels, valley_eps=1e-3, f=None):
+def merge_centers(points, centers, labels, ratio=0.9, f=None):
 
     centers = centers.copy()
     labels = labels.copy()
@@ -109,7 +109,7 @@ def merge_centers(points, centers, labels, valley_eps=1e-3, f=None):
                 centers[i],
                 centers[j],
                 f,
-                eps=valley_eps,
+                ratio=ratio,
             )
 
             # merge if NO valley
@@ -143,7 +143,14 @@ def merge_centers(points, centers, labels, valley_eps=1e-3, f=None):
     return centers_new, radii_new, labels_new
 
 
-def cluster_points(points: np.ndarray, C_max: int = 5, random_state: int = 0, f=None) -> tuple[np.ndarray, np.ndarray]:
+def cluster_points(
+    points: np.ndarray,
+    C_max: int = 5,
+    random_state: int = 0,
+    f=None,
+    valley_ratio: float = 0.9,
+    sil_var_thres: float = 4e-3,
+) -> tuple[np.ndarray, np.ndarray]:
     """Cluster high-score points and return (centers, radii).
 
     Radii are per-center, computed as the max distance from the center to its assigned points.
@@ -181,7 +188,7 @@ def cluster_points(points: np.ndarray, C_max: int = 5, random_state: int = 0, f=
         return center, np.array([radius])
 
     sil_values = sorted([scores[k][0] for k in scores], reverse=True)
-    if np.var(sil_values[: min(3, len(sil_values))]) < 4e-3:
+    if np.var(sil_values[: min(3, len(sil_values))]) < float(sil_var_thres):
         center = np.mean(points, axis=0, keepdims=True)
         radius = np.max(np.linalg.norm(points - center, axis=1))
         return center, np.array([radius])
@@ -189,7 +196,7 @@ def cluster_points(points: np.ndarray, C_max: int = 5, random_state: int = 0, f=
     best_k = max(scores, key=lambda kk: scores[kk][0])
     _, centers, labels = scores[best_k]
 
-    centers, radii, labels = merge_centers(points, centers, labels, valley_eps=1e-3, f=f)
+    centers, radii, labels = merge_centers(points, centers, labels, ratio=float(valley_ratio), f=f)
 
     return centers, radii
 
@@ -220,6 +227,8 @@ def adaptive_peak_detection(
     sample_method: str = "grid",
     ball_method: str = "grid",
     random_state: int = 0,
+    valley_ratio: float = 0.9,
+    sil_var_thres: float = 4e-3,
     verbose: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, list[AdaptiveStep], list[int]]:
     """Adaptive peak detection with per-step verbose output.
@@ -247,14 +256,21 @@ def adaptive_peak_detection(
     else:
         samples = grid_sampling(D, int(m_global))
     vals = f(samples)
-    collected = samples[vals >= L_cut]
+    collected = samples[vals >= L_cut * float(vals.max())]
 
     if len(collected) == 0:
         if verbose:
             print("[init] collected=0 -> no centers")
         return np.empty((0, dim), dtype=np.float32), np.empty((0, dim), dtype=np.float32), [], []
 
-    init_centers, radii = cluster_points(collected, C_max, random_state=random_state, f=f)
+    init_centers, radii = cluster_points(
+        collected,
+        C_max,
+        random_state=random_state,
+        f=f,
+        valley_ratio=float(valley_ratio),
+        sil_var_thres=float(sil_var_thres),
+    )
     # Queue items are (center, radius, budget, flags, layer)
     queue: deque[tuple[np.ndarray, float, int, list[bool], int]] = deque()
     # Local sampling reuses the *global* budget by design.
@@ -310,8 +326,8 @@ def adaptive_peak_detection(
         else:
             ball_samples = grid_ball_sampling(center, r, int(N))
         vals = f(ball_samples)
-        collected = ball_samples[vals >= L_cut]
-
+        collected = ball_samples[vals >= L_cut * float(vals.max())]
+        
         if len(collected) == 0:
             history.append(
                 AdaptiveStep(
@@ -333,7 +349,14 @@ def adaptive_peak_detection(
                 )
             continue
 
-        new_centers, new_radii = cluster_points(collected, C_max, random_state=random_state, f=f)
+        new_centers, new_radii = cluster_points(
+            collected,
+            C_max,
+            random_state=random_state,
+            f=f,
+            valley_ratio=float(valley_ratio),
+            sil_var_thres=float(sil_var_thres),
+        )
 
         if len(new_centers) == 1:
             for k in range(len(flags)):
@@ -380,7 +403,6 @@ def _plot_phi_landscape(
     centers: np.ndarray,
     init_centers: np.ndarray,
     center_layers: list[int] | None = None,
-    L_cut: float,
     save_path: Path,
     m: int = 200,
 ) -> None:
@@ -397,7 +419,6 @@ def _plot_phi_landscape(
     plt.figure(figsize=(6.5, 5.5))
     cs = plt.contourf(X, Y, vals, levels=50)
     plt.colorbar(cs, label=r"$\phi(u;\theta)$")
-    plt.contour(X, Y, vals, levels=[L_cut], colors=["white"], linewidths=1.0)
 
     if init_centers.size:
         plt.scatter(init_centers[:, 0], init_centers[:, 1], s=60, c="yellow", marker="o", edgecolors="k", label="init")
@@ -455,6 +476,18 @@ def main() -> None:
     parser.add_argument("--r-init", type=float, default=0.3)
     parser.add_argument("--conv-steps", type=int, default=2)
     parser.add_argument(
+        "--valley-ratio",
+        type=float,
+        default=0.9,
+        help="Valley test ratio used when merging centers.",
+    )
+    parser.add_argument(
+        "--silhouette-var-threshold",
+        type=float,
+        default=4e-3,
+        help="If top silhouette score variance is below this threshold, fallback to one cluster.",
+    )
+    parser.add_argument(
         "--sample-method",
         type=str,
         default="grid",
@@ -509,6 +542,8 @@ def main() -> None:
         conv_steps=int(args.conv_steps),
         sample_method=str(args.sample_method),
         ball_method=str(args.ball_method),
+        valley_ratio=float(args.valley_ratio),
+        sil_var_thres=float(args.sil_var_thres),
         verbose=True,
     )
 
@@ -526,7 +561,6 @@ def main() -> None:
             centers=centers,
             init_centers=init_centers,
             center_layers=center_layers,
-            L_cut=float(args.L_cut),
             save_path=fig_path,
             m=220,
         )

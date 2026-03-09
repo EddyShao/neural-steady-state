@@ -41,8 +41,8 @@ The following 3 networks are trained independently.
 - Solution map with stability: `python exps/grey_scott/locate_sol_classifier.py --make_map`
 
 ### Feedback loop
-- Data generation: `python exps/feedback_loop/data/gen_feedback_loop.py`
-- Training (PSNN + stability + count): `python exps/feedback_loop/train.py`
+- Data generation: `python exps/feedback_loop/_gen_data.py --config configs/major.yaml --seed 42`
+- Training (PSNN + stability + count): `python exps/feedback_loop/run_train.py --config configs/major.yaml --seed 42`
 - Bifurcation plotting: `python exps/feedback_loop/run_bifur.py --config configs/major.yaml --seed 42 --mode strict -- --L-cut 0.35`
 - Test-observation evaluation: `python exps/feedback_loop/run_eval.py --config configs/major.yaml --seed 42 --mode strict -- --device cpu`
 

@@ -51,11 +51,13 @@ def make_loaders(train_npz, test_npz, batch_size=1024, num_workers=0, device=Non
     train_loader = DataLoader(train_ds, batch_size=batch_size,
                               shuffle=True, drop_last=False,
                               num_workers=num_workers,
+                              persistent_workers=num_workers > 0,
                               pin_memory=True,
                               collate_fn=_identity_collate)
     test_loader  = DataLoader(test_ds, batch_size=batch_size,
                               shuffle=False, drop_last=False,
                               num_workers=num_workers,
+                              persistent_workers=num_workers > 0,
                               pin_memory=True,
                               collate_fn=_identity_collate)
     return train_loader, test_loader
@@ -138,11 +140,13 @@ def make_obs_loaders(train_obs, test_obs, batch_size=1024, num_workers=0, device
     train_loader = DataLoader(train_ds, batch_size=batch_size,
                               shuffle=True, drop_last=False,
                               num_workers=num_workers,
+                              persistent_workers=num_workers > 0,
                               pin_memory=True,
                               collate_fn=_identity_collate)
     test_loader = DataLoader(test_ds, batch_size=batch_size,
                              shuffle=False, drop_last=False,
                              num_workers=num_workers,
+                             persistent_workers=num_workers > 0,
                              pin_memory=True,
                              collate_fn=_identity_collate)
     return train_loader, test_loader

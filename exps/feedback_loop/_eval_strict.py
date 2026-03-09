@@ -18,7 +18,7 @@ repo_root = exp_dir.parents[1]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from exps.feedback_loop.eval_common import aggregate_evaluation_results, evaluate_observations, load_observations, load_true_solutions, save_outputs
+from exps.feedback_loop._eval_common import aggregate_evaluation_results, evaluate_observations, load_observations, load_true_solutions, save_outputs
 from locater.strict import adaptive_peak_detection_amr
 from psnn.config import cfg_get, load_yaml, resolve_path
 from psnn.loaders import load_inference_functions
@@ -235,7 +235,7 @@ def main() -> None:
             )
     metrics.update(
         {
-            "script": "eval_strict.py",
+            "script": "_eval_strict.py",
             "obs_path": str(Path(args.obs_path).resolve()),
             "sampling": {
                 "limit": args.limit,
@@ -255,9 +255,10 @@ def main() -> None:
             "num_procs": int(num_procs),
         }
     )
+    file_tag = f"strict_{str(args.sample_method).lower()}"
     json_path, npz_path = save_outputs(
         out_root=args.out_root,
-        stem="test_observation_strict",
+        stem=f"test_observation_{file_tag}",
         metrics=metrics,
         details=details,
     )

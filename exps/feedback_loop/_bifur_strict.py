@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw a bifurcation diagram for the feedback-loop experiment."""
+"""Draw a feedback-loop bifurcation diagram using the strict locator."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import os
 import sys
 import warnings
 from pathlib import Path
-import tqdm
 
 import numpy as np
+import tqdm
 
 import matplotlib
 
@@ -20,7 +20,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-# --- make repo root importable (so `import psnn` works no matter where you run from) ---
 exp_dir = os.path.dirname(os.path.abspath(__file__))
 repo_root = os.path.abspath(os.path.join(exp_dir, "../.."))
 if repo_root not in sys.path:
@@ -35,29 +34,23 @@ try:
 except Exception:
 	pass
 
-from psnn.loaders import load_inference_functions
+from locater.strict import adaptive_peak_detection_amr
 from psnn.config import cfg_get, load_yaml, resolve_path
+from psnn.loaders import load_inference_functions
 
-# Reuse the adaptive locator (kept as a single standalone file at repo root).
-from locater.flexible import adaptive_peak_detection
-
-from exps.feedback_loop.gen_data import U as true_U
+from exps.feedback_loop._gen_data import U as true_U
 
 
 _WORKER_PHI_FN = None
+_WORKER_COUNT_FN = None
 _WORKER_STABILITY_FN = None
 
 
-def _init_worker(phi_ckpt: str, stability_ckpt: str) -> None:
-	"""Initializer for multiprocessing workers.
-
-	Loads models once per process (avoids pickling torch modules/callables).
-	"""
-	global _WORKER_PHI_FN, _WORKER_STABILITY_FN
+def _init_worker(phi_ckpt: str, count_ckpt: str, stability_ckpt: str) -> None:
+	global _WORKER_PHI_FN, _WORKER_COUNT_FN, _WORKER_STABILITY_FN
 	import torch as _torch
 
 	_torch.set_grad_enabled(False)
-	# Prevent each process from using many BLAS/OpenMP threads.
 	try:
 		_torch.set_num_threads(1)
 	except Exception:
@@ -67,57 +60,17 @@ def _init_worker(phi_ckpt: str, stability_ckpt: str) -> None:
 	except Exception:
 		pass
 
-	phi_fn, _count_fn, stability_fn = load_inference_functions(
+	phi_fn, count_fn, stability_fn = load_inference_functions(
 		phi_ckpt=phi_ckpt,
+		count_ckpt=count_ckpt,
 		stability_ckpt=stability_ckpt,
 		device=_torch.device("cpu"),
 	)
-	if phi_fn is None or stability_fn is None:
+	if phi_fn is None or count_fn is None or stability_fn is None:
 		raise RuntimeError("Worker failed to load inference functions")
 	_WORKER_PHI_FN = phi_fn
+	_WORKER_COUNT_FN = count_fn
 	_WORKER_STABILITY_FN = stability_fn
-
-
-def _run_one_alpha1(task: tuple) -> tuple:
-	"""Run one alpha1 value.
-
-	Returns: (a1, true_u[][2], true_stable[], pred_u[][2], pred_stable[])
-	"""
-	(
-		a1,
-		alpha2,
-		gamma1,
-		gamma2,
-		D,
-		apd_kwargs,
-		stable_thresh,
-	) = task
-	theta = _theta_from_components(float(a1), float(alpha2), float(gamma1), float(gamma2))
-
-	# True branch (background)
-	tru = true_U(theta)
-	true_u: list[list[float]] = []
-	true_stable: list[bool] = []
-	if tru is not None:
-		for sol in tru:
-			true_u.append([float(sol["u"][0]), float(sol["u"][1])])
-			true_stable.append(bool(sol["stable"]))
-
-	# Predicted centers
-	if _WORKER_PHI_FN is None or _WORKER_STABILITY_FN is None:
-		raise RuntimeError("Worker inference functions are not initialized")
-	phi_u = _WORKER_PHI_FN(theta)
-	centers, _init_centers, _history, _layers = adaptive_peak_detection(phi_u, D, **apd_kwargs)
-
-	pred_u: list[list[float]] = []
-	pred_stable: list[bool] = []
-	if getattr(centers, "size", 0) != 0:
-		p_stable = _WORKER_STABILITY_FN(theta, centers)
-		for u, prob in zip(centers, p_stable):
-			pred_u.append([float(u[0]), float(u[1])])
-			pred_stable.append(bool(float(prob) >= float(stable_thresh)))
-
-	return (float(a1), true_u, true_stable, pred_u, pred_stable)
 
 
 def _device_from_arg(device: str) -> torch.device:
@@ -131,15 +84,75 @@ def _theta_from_components(alpha1: float, alpha2: float, gamma1: float, gamma2: 
 	return np.asarray([alpha1, alpha2, gamma1, gamma2], dtype=np.float32)
 
 
+def _predict_centers(
+	phi_fn,
+	count_fn,
+	theta: np.ndarray,
+	D: list[list[float]],
+	locator_kwargs: dict,
+) -> np.ndarray:
+	num = max(0, int(count_fn(theta)))
+	if num <= 0:
+		return np.empty((0, len(D)), dtype=np.float32)
+	phi_u = phi_fn(theta)
+	centers, _init_centers, _history, _layers = adaptive_peak_detection_amr(
+		phi_u,
+		D,
+		**locator_kwargs,
+	)
+	return centers
+
+
+def _run_one_alpha1(task: tuple) -> tuple:
+	(
+		a1,
+		alpha2,
+		gamma1,
+		gamma2,
+		D,
+		locator_kwargs,
+		stable_thresh,
+	) = task
+	theta = _theta_from_components(float(a1), float(alpha2), float(gamma1), float(gamma2))
+
+	tru = true_U(theta)
+	true_u: list[list[float]] = []
+	true_stable: list[bool] = []
+	if tru is not None:
+		for sol in tru:
+			true_u.append([float(sol["u"][0]), float(sol["u"][1])])
+			true_stable.append(bool(sol["stable"]))
+
+	if _WORKER_PHI_FN is None or _WORKER_COUNT_FN is None or _WORKER_STABILITY_FN is None:
+		raise RuntimeError("Worker inference functions are not initialized")
+
+	centers = _predict_centers(_WORKER_PHI_FN, _WORKER_COUNT_FN, theta, D, locator_kwargs)
+	pred_u: list[list[float]] = []
+	pred_stable: list[bool] = []
+	if centers.size != 0:
+		p_stable = _WORKER_STABILITY_FN(theta, centers)
+		for u, prob in zip(centers, p_stable):
+			pred_u.append([float(u[0]), float(u[1])])
+			pred_stable.append(bool(float(prob) >= float(stable_thresh)))
+
+	return (float(a1), true_u, true_stable, pred_u, pred_stable)
+
+
+def _load_cfg(config_path: str) -> tuple[dict, Path]:
+	cfg_path = resolve_path(exp_dir, config_path)
+	cfg = load_yaml(cfg_path) if cfg_path.exists() else {}
+	return cfg, cfg_path
+
+
 def main() -> None:
 	pre = argparse.ArgumentParser(add_help=False)
 	pre.add_argument("--config", type=str, default=os.path.join(exp_dir, "config.yaml"))
 	pre_args, _ = pre.parse_known_args()
 
-	cfg_path = resolve_path(exp_dir, pre_args.config)
-	cfg = load_yaml(cfg_path) if cfg_path.exists() else {}
+	cfg, _cfg_path = _load_cfg(pre_args.config)
 	path_cfg = cfg_get(cfg, "training.paths", {})
 	u_bounds_cfg = cfg_get(cfg, "data_generation.domain.u_bounds", [[-1.0, 6.0], [-1.0, 6.0]])
+
 	flat_u_bounds = [
 		float(u_bounds_cfg[0][0]),
 		float(u_bounds_cfg[0][1]),
@@ -147,10 +160,15 @@ def main() -> None:
 		float(u_bounds_cfg[1][1]),
 	]
 
-	p = argparse.ArgumentParser(description="Bifurcation diagram using adaptive_peak_detection + stability classifier")
+	p = argparse.ArgumentParser(description="Bifurcation diagram using strict locator + count classifier")
 	p.add_argument("--config", type=str, default=str(pre_args.config))
 	p.add_argument("--phi-ckpt", type=str, default=str(resolve_path(exp_dir, cfg_get(path_cfg, "phi_ckpt", "psnn_phi.pt"))))
-	p.add_argument("--stability-ckpt", type=str, default=str(resolve_path(exp_dir, cfg_get(path_cfg, "stability_ckpt", "psnn_stability_cls.pt"))))
+	p.add_argument("--count-ckpt", type=str, default=str(resolve_path(exp_dir, cfg_get(path_cfg, "count_ckpt", "psnn_numsol.pt"))))
+	p.add_argument(
+		"--stability-ckpt",
+		type=str,
+		default=str(resolve_path(exp_dir, cfg_get(path_cfg, "stability_ckpt", "psnn_stability_cls.pt"))),
+	)
 	p.add_argument("--device", type=str, default=cfg_get(cfg, "training.device", "auto"), choices=["auto", "cpu", "cuda"])
 	p.add_argument(
 		"--num-procs",
@@ -159,8 +177,6 @@ def main() -> None:
 		help="CPU processes for parallel sweep. 0=auto, 1=serial. Parallel mode forces CPU models.",
 	)
 
-	# theta = (alpha1, alpha2, gamma1, gamma2)
-	# Bifurcating parameter: alpha1
 	p.add_argument("--alpha2", type=float, default=1.9)
 	p.add_argument("--gamma1", type=float, default=0.6)
 	p.add_argument("--gamma2", type=float, default=0.2)
@@ -168,7 +184,6 @@ def main() -> None:
 	p.add_argument("--alpha1-max", type=float, default=4.8)
 	p.add_argument("--alpha1-steps", type=int, default=51)
 
-	# u=(p1,p2) domain
 	p.add_argument(
 		"--u-bounds",
 		type=float,
@@ -177,20 +192,17 @@ def main() -> None:
 		help="2D bounds for u as: u0_low u0_high u1_low u1_high",
 	)
 
-	# adaptive_peak_detection hyperparams
 	p.add_argument("--L-cut", type=float, default=0.35)
 	p.add_argument("--N-global", type=int, default=3000)
-	p.add_argument("--m-global", type=int, default=50)
-	p.add_argument("--C-max", type=int, default=4)
-	p.add_argument("--r-init", type=float, default=0.3)
-	p.add_argument("--conv-steps", type=int, default=2)
+	p.add_argument("--m-global", type=int, default=55)
+	p.add_argument("--conv-th", type=float, default=1e-2)
+	p.add_argument("--max-iter", type=int, default=25)
 	p.add_argument("--sample-method", type=str, default="grid", choices=["grid", "uniform"])
 	p.add_argument("--ball-method", type=str, default="grid", choices=["grid", "uniform"])
 	p.add_argument("--random-state", type=int, default=int(cfg_get(cfg, "seed", 0)))
 	p.add_argument("--verbose", action="store_true")
 
-	# output
-	p.add_argument("--out-root", type=str, default=os.path.join(exp_dir, "bifur_flexible_runs"))
+	p.add_argument("--out-root", type=str, default=os.path.join(exp_dir, "bifur_strict_runs"))
 
 	args = p.parse_args()
 
@@ -202,7 +214,6 @@ def main() -> None:
 		cpu_n = os.cpu_count() or 1
 		num_procs = min(8, max(1, cpu_n - 1))
 
-	# Parallel mode is CPU-only to avoid multi-process CUDA contention.
 	if num_procs > 1 and device.type != "cpu":
 		warnings.warn("--num-procs>1 forces CPU; falling back to serial on the selected device")
 		num_procs = 1
@@ -210,17 +221,17 @@ def main() -> None:
 		warnings.warn("--verbose is disabled in parallel mode to keep logs readable")
 
 	phi_fn = None
+	count_fn = None
 	stability_fn = None
 	if num_procs <= 1:
-		phi_fn, _count_fn, stability_fn = load_inference_functions(
+		phi_fn, count_fn, stability_fn = load_inference_functions(
 			phi_ckpt=args.phi_ckpt,
+			count_ckpt=args.count_ckpt,
 			stability_ckpt=args.stability_ckpt,
 			device=device,
 		)
-		if phi_fn is None:
-			raise RuntimeError("Failed to load phi checkpoint")
-		if stability_fn is None:
-			raise RuntimeError("Failed to load stability checkpoint")
+		if phi_fn is None or count_fn is None or stability_fn is None:
+			raise RuntimeError("Failed to load inference functions")
 
 	alpha1_grid = np.linspace(float(args.alpha1_min), float(args.alpha1_max), int(args.alpha1_steps), dtype=np.float32)
 
@@ -229,13 +240,12 @@ def main() -> None:
 	true_centers_by_alpha1: list[np.ndarray] = []
 	true_stability_by_alpha1: list[np.ndarray] = []
 
-	apd_kwargs = dict(
+	locator_kwargs = dict(
 		L_cut=float(args.L_cut),
 		N_global=int(args.N_global),
 		m_global=int(args.m_global),
-		C_max=int(args.C_max),
-		r_init=float(args.r_init),
-		conv_steps=int(args.conv_steps),
+		conv_th=float(args.conv_th),
+		max_iter=int(args.max_iter),
 		sample_method=str(args.sample_method),
 		ball_method=str(args.ball_method),
 		random_state=int(args.random_state),
@@ -244,11 +254,9 @@ def main() -> None:
 	stable_thresh = 0.5
 
 	if num_procs <= 1:
-		# Serial execution
 		for a1 in tqdm.tqdm(alpha1_grid, desc="Processing alpha1 values"):
 			theta = _theta_from_components(float(a1), args.alpha2, args.gamma1, args.gamma2)
 
-			# True branch (background)
 			tru = true_U(theta)
 			true_centers = np.empty((0, 2), dtype=np.float32)
 			true_stability = np.empty((0,), dtype=bool)
@@ -258,9 +266,7 @@ def main() -> None:
 			true_centers_by_alpha1.append(true_centers)
 			true_stability_by_alpha1.append(true_stability)
 
-			# Predicted centers
-			phi_u = phi_fn(theta)
-			centers, _init_centers, _history, _layers = adaptive_peak_detection(phi_u, D, **apd_kwargs)
+			centers = _predict_centers(phi_fn, count_fn, theta, D, locator_kwargs)
 			if centers.size == 0:
 				pred_centers_by_alpha1.append(np.empty((0, 2), dtype=np.float32))
 				pred_stability_by_alpha1.append(np.empty((0,), dtype=bool))
@@ -270,11 +276,9 @@ def main() -> None:
 			pred_centers_by_alpha1.append(np.asarray(centers, dtype=np.float32))
 			pred_stability_by_alpha1.append(np.asarray(p_stable >= stable_thresh, dtype=bool))
 	else:
-		# Parallel execution on CPU
-		if not os.path.exists(args.phi_ckpt):
-			raise FileNotFoundError(args.phi_ckpt)
-		if not os.path.exists(args.stability_ckpt):
-			raise FileNotFoundError(args.stability_ckpt)
+		for ckpt in (args.phi_ckpt, args.count_ckpt, args.stability_ckpt):
+			if not os.path.exists(ckpt):
+				raise FileNotFoundError(ckpt)
 
 		ctx = mp.get_context("spawn")
 		tasks = (
@@ -284,7 +288,7 @@ def main() -> None:
 				float(args.gamma1),
 				float(args.gamma2),
 				D,
-				apd_kwargs,
+				locator_kwargs,
 				stable_thresh,
 			)
 			for a1 in alpha1_grid
@@ -293,7 +297,7 @@ def main() -> None:
 		with ctx.Pool(
 			processes=int(num_procs),
 			initializer=_init_worker,
-			initargs=(str(args.phi_ckpt), str(args.stability_ckpt)),
+			initargs=(str(args.phi_ckpt), str(args.count_ckpt), str(args.stability_ckpt)),
 		) as pool:
 			for _a1, t_u, t_stable, p_u, p_stable in tqdm.tqdm(
 				pool.imap(_run_one_alpha1, tasks, chunksize=1),
@@ -307,8 +311,9 @@ def main() -> None:
 
 	out_dir = Path(args.out_root)
 	out_dir.mkdir(parents=True, exist_ok=True)
-	fig_path = out_dir / "bifur_flexible.png"
-	data_path = out_dir / "bifur_flexible_data.npz"
+	file_tag = f"strict_{str(args.sample_method).lower()}"
+	fig_path = out_dir / f"bifur_{file_tag}.png"
+	data_path = out_dir / f"bifur_{file_tag}_data.npz"
 
 	def _flatten_component(
 		alpha1_values: np.ndarray,
@@ -357,7 +362,7 @@ def main() -> None:
 		metadata_json=np.asarray(
 			json.dumps(
 				{
-					"script": "bifur_flexible.py",
+					"script": "_bifur_strict.py",
 					"args": vars(args),
 					"stable_threshold": stable_thresh,
 				},

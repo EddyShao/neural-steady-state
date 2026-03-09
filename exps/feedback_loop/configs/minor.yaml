@@ -1,7 +1,0 @@
-inherits: baseline.yaml
-
-run:
-  variant: minor
-
-data_generation:
-  corruption_rate: 0.1

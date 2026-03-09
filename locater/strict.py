@@ -225,7 +225,7 @@ def adaptive_peak_detection_amr(
         samples = grid_sampling(D, int(m_global))
 
     vals = f(samples)
-    collected = samples[vals >= float(L_cut)]
+    collected = samples[vals >= float(L_cut) * float(vals.max())]
 
     if collected.shape[0] == 0:
         if verbose:
@@ -266,7 +266,7 @@ def adaptive_peak_detection_amr(
                 local = grid_ball_sampling(c, r_use, int(m_global))
 
             v = f(local)
-            col = local[v >= float(L_cut)]
+            col = local[v >= float(L_cut) * float(v.max())]
             n_col_total += int(col.shape[0])
 
             if col.shape[0] == 0:
@@ -329,7 +329,6 @@ def _plot_phi_landscape(
     centers: np.ndarray,
     init_centers: np.ndarray,
     center_layers: list[int] | None,
-    L_cut: float,
     save_path: Path,
     m: int = 220,
 ) -> None:
@@ -346,7 +345,6 @@ def _plot_phi_landscape(
     plt.figure(figsize=(6.5, 5.5))
     cs = plt.contourf(X, Y, vals, levels=50)
     plt.colorbar(cs, label=r"$\phi(u;\theta)$")
-    plt.contour(X, Y, vals, levels=[float(L_cut)], colors=["white"], linewidths=1.0)
 
     if init_centers.size:
         plt.scatter(init_centers[:, 0], init_centers[:, 1], s=60, c="yellow", marker="o", edgecolors="k", label="init")
@@ -453,7 +451,6 @@ def main() -> None:
             centers=centers,
             init_centers=init_centers,
             center_layers=label_layers,
-            L_cut=float(args.L_cut),
             save_path=fig_path,
             m=220,
         )

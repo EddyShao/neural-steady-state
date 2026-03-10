@@ -175,6 +175,139 @@ def _merge_overlapping_regions(
 
     return np.asarray(C, dtype=np.float32), np.asarray(R, dtype=np.float32)
 
+def valley_between(c1, c2, f, n_samples=100, ratio=0.9):
+    """
+    Check if there is a valley between two centers.
+
+    Returns True if a valley exists.
+    """
+
+    c1 = np.asarray(c1)
+    c2 = np.asarray(c2)
+
+    t = np.linspace(0, 1, n_samples + 2)[1:-1]
+
+    pts = (1 - t)[:, None] * c1 + t[:, None] * c2
+    vals = f(pts)
+
+    peak_val = min(f(c1[None, :])[0], f(c2[None, :])[0])
+    # find the c_max with the highest value along the line between c1 and c2
+    c_max = pts[np.argmax(vals)]
+
+    has_valley = np.mean(vals) < ratio * peak_val
+    return has_valley
+
+
+# def merge_centers(centers, f, ratio=0.9, n_samples=100):
+#     """
+#     Merge centers if there is no valley between them.
+#     """
+
+#     C = [np.asarray(c).copy() for c in centers]
+
+#     changed = True
+
+#     while changed:
+#         changed = False
+#         i = 0
+
+#         while i < len(C):
+
+#             j = i + 1
+
+#             while j < len(C):
+
+#                 has_valley, c_max = valley_between(
+#                     C[i],
+#                     C[j],
+#                     f,
+#                     n_samples=n_samples,
+#                     ratio=ratio
+#                 )
+
+#                 # merge if NO valley
+#                 if not has_valley:
+
+#                     new_center = c_max.astype(np.float32)
+
+#                     C[i] = new_center
+#                     C.pop(j)
+
+#                     changed = True
+#                     continue
+
+#                 j += 1
+
+#             i += 1
+
+#     return np.asarray(C)
+
+def merge_centers(centers, f, ratio=0.9, n_samples=100):
+    """
+    Merge centers using connected components.
+    Connect two centers if there is NO valley between them.
+    """
+
+    centers = np.asarray(centers)
+    K = len(centers)
+
+    if K <= 1:
+        return centers
+
+    # adjacency list
+    adj = [[] for _ in range(K)]
+
+    for i in range(K):
+        for j in range(i + 1, K):
+
+            has_valley = valley_between(
+                centers[i],
+                centers[j],
+                f,
+                n_samples=n_samples,
+                ratio=ratio
+            )
+
+            if not has_valley:
+                adj[i].append(j)
+                adj[j].append(i)
+
+    # find connected components
+    visited = np.zeros(K, dtype=bool)
+    components = []
+
+    for i in range(K):
+
+        if visited[i]:
+            continue
+
+        stack = [i]
+        comp = []
+
+        while stack:
+            v = stack.pop()
+
+            if visited[v]:
+                continue
+
+            visited[v] = True
+            comp.append(v)
+
+            for nb in adj[v]:
+                if not visited[nb]:
+                    stack.append(nb)
+
+        components.append(comp)
+
+    # merge each component (simple mean)
+    merged = []
+
+    for comp in components:
+        pts = centers[comp]
+        merged_center = np.mean(pts, axis=0)
+        merged.append(merged_center)
+
+    return np.asarray(merged)
 
 @dataclass(frozen=True)
 class AdaptiveStep:
@@ -200,8 +333,11 @@ def adaptive_peak_detection_amr(
     ball_method: str = "grid",
     random_state: int = 0,
     verbose: bool = True,
+    valley_ratio: float = 0.9,
 ) -> tuple[np.ndarray, np.ndarray, list[AdaptiveStep], list[int]]:
-    """AMR with fixed number of clusters (no split), plus overlap merging."""
+    """AMR with fixed number of centers; overlapping regions may be merged for sampling,
+    but centers are always re-clustered back to `num`.
+    """
     sample_method = str(sample_method).lower()
     ball_method = str(ball_method).lower()
     dim = len(D)
@@ -239,25 +375,32 @@ def adaptive_peak_detection_amr(
         return np.empty((0, dim), np.float32), np.empty((0, dim), np.float32), [], []
 
     init_centers = centers.copy()
-
-    centers, radii = _merge_overlapping_regions(centers, radii, metric=metric)
-
     history: list[AdaptiveStep] = []
     prev_sorted = _lex_sort_centers(centers)
 
     if verbose:
-        global_budget = _fmt_budget(int(N_global), method="uniform", label="global") if sample_method == "uniform" else _fmt_budget(int(m_global), method="grid", label="global")
-        local_budget = _fmt_budget(int(N_global), method="uniform", label="local") if ball_method == "uniform" else _fmt_budget(int(m_global), method="grid", label="local")
+        global_budget = (
+            _fmt_budget(int(N_global), method="uniform", label="global")
+            if sample_method == "uniform"
+            else _fmt_budget(int(m_global), method="grid", label="global")
+        )
+        local_budget = (
+            _fmt_budget(int(N_global), method="uniform", label="local")
+            if ball_method == "uniform"
+            else _fmt_budget(int(m_global), method="grid", label="local")
+        )
         print(f"[init] collected={len(collected)} init_centers={init_centers.tolist()}")
-        print(f"[init] centers(after-merge)={centers.tolist()} radii={radii.tolist()} metric={metric} ({global_budget}, {local_budget})")
+        print(f"[init] centers={centers.tolist()} radii={radii.tolist()} metric={metric} ({global_budget}, {local_budget})")
 
-    # 2-3) local refine + merge, until converged
+    # 2-3) local refine, merge only regions, then re-cluster back to num
     for it in range(1, int(max_iter) + 1):
-        new_centers = []
-        new_radii = []
+        # Step A: merge regions only for sampling
+        merged_centers, merged_radii = _merge_overlapping_regions(centers, radii, metric=metric)
+
+        merged_collected = []
         n_col_total = 0
 
-        for c, r in zip(centers, radii):
+        for c, r in zip(merged_centers, merged_radii):
             r_use = float(max(r, 1e-6))
 
             if ball_method == "uniform":
@@ -269,31 +412,38 @@ def adaptive_peak_detection_amr(
             col = local[v >= float(L_cut) * float(v.max())]
             n_col_total += int(col.shape[0])
 
-            if col.shape[0] == 0:
-                # Keep center; shrink to encourage escape from empty region
-                new_centers.append(c.astype(np.float32))
-                new_radii.append(np.float32(0.5 * r_use))
-                continue
+            if col.shape[0] > 0:
+                merged_collected.append(col)
 
-            c_new = np.mean(col, axis=0).astype(np.float32)
-            r_new = float(np.max(np.linalg.norm(col - c_new, axis=1)))
-            new_centers.append(c_new)
-            new_radii.append(np.float32(r_new))
-
-        centers = np.asarray(new_centers, dtype=np.float32)
-        radii = np.asarray(new_radii, dtype=np.float32)
-
-        # merge overlaps (may reduce count)
-        centers, radii = _merge_overlapping_regions(centers, radii, metric=metric)
-
-        # convergence check (lex-sort)
-        curr_sorted = _lex_sort_centers(centers)
-        if prev_sorted.shape == curr_sorted.shape and curr_sorted.size > 0:
-            move = float(np.max(np.linalg.norm(curr_sorted - prev_sorted, axis=1)))
+        if len(merged_collected) == 0:
+            # no new evidence: keep previous centers, shrink radii
+            radii = np.maximum(0.5 * radii, 1e-6).astype(np.float32)
+            move = 0.0
+            action = f"empty-refine+recluster(k={centers.shape[0]})"
         else:
-            move = float("inf")
+            pooled = np.concatenate(merged_collected, axis=0).astype(np.float32)
 
-        action = f"refine+merge(k={centers.shape[0]})"
+            # Re-cluster BACK to exactly num centers
+            new_centers, new_radii = _cluster_fixed_k(
+                pooled, int(num), random_state=int(random_state) + int(it)
+            )
+
+            if new_centers.size == 0:
+                # fallback: keep old centers if pooled points insufficient
+                new_centers = centers.copy()
+                new_radii = radii.copy()
+            centers = new_centers
+            radii = new_radii
+
+            curr_sorted = _lex_sort_centers(centers)
+            if prev_sorted.shape == curr_sorted.shape and curr_sorted.size > 0:
+                move = float(np.max(np.linalg.norm(curr_sorted - prev_sorted, axis=1)))
+            else:
+                move = float("inf")
+
+            action = f"merge-regions+recluster(k={centers.shape[0]})"
+            prev_sorted = curr_sorted
+
         history.append(
             AdaptiveStep(
                 layer=int(it),
@@ -306,16 +456,18 @@ def adaptive_peak_detection_amr(
         )
 
         if verbose:
-            print(f"[iter {it}] {action} centers={centers.tolist()} radii={radii.tolist()} move={move:.3e} collected={n_col_total}")
+            print(
+                f"[iter {it}] {action} centers={centers.tolist()} "
+                f"radii={radii.tolist()} move={move:.3e} collected={n_col_total}"
+            )
 
         if move < float(conv_th):
             if verbose:
                 print(f"[done] converged at iter {it}: move={move:.3e} < conv_th={conv_th}")
             break
 
-        prev_sorted = curr_sorted
-
     layers = [step.layer for step in history]
+    centers = merge_centers(centers, f, ratio=0.9, n_samples=100)
     return centers, init_centers, history, layers
 
 
@@ -394,6 +546,7 @@ def main() -> None:
     p.add_argument("--conv-th", type=float, default=1e-2, help="Convergence threshold on center movement.")
     p.add_argument("--max-iter", type=int, default=25)
     p.add_argument("--random-state", type=int, default=0)
+    p.add_argument("--valley-ratio", type=float, default=0.9, help="Ratio for valley detection between centers.")
 
     p.add_argument("--sample-method", type=str, default="grid", choices=["grid", "uniform"])
     p.add_argument("--ball-method", type=str, default="grid", choices=["grid", "uniform"])

@@ -2,6 +2,7 @@
 """Evaluate strict clustering on the feedback-loop observation test set."""
 
 from __future__ import annotations
+import numpy as np
 
 import argparse
 import multiprocessing as mp
@@ -180,7 +181,7 @@ def main() -> None:
         )
     else:
         try:
-            ctx = mp.get_context("spawn")
+            ctx = mp.get_context("fork")
             tasks = (
                 (
                     np.asarray(entry["Theta"], dtype=np.float32).reshape(-1),

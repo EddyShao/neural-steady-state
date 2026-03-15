@@ -98,6 +98,7 @@ def _predict_centers(
 	centers, _init_centers, _history, _layers = adaptive_peak_detection_amr(
 		phi_u,
 		D,
+		num=num,
 		**locator_kwargs,
 	)
 	return centers

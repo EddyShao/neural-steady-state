@@ -326,7 +326,7 @@ def adaptive_peak_detection_amr(
     L_cut: float = 0.35,
     N_global: int = 3000,
     m_global: int = 55,
-    num: int = 3,
+    num: int | None = None,
     conv_th: float = 1e-2,
     max_iter: int = 25,
     sample_method: str = "grid",
@@ -338,6 +338,9 @@ def adaptive_peak_detection_amr(
     """AMR with fixed number of centers; overlapping regions may be merged for sampling,
     but centers are always re-clustered back to `num`.
     """
+    if num is None:
+        raise ValueError("adaptive_peak_detection_amr requires an explicit 'num' (e.g. from the count classifier)")
+    num = int(num)
     sample_method = str(sample_method).lower()
     ball_method = str(ball_method).lower()
     dim = len(D)
@@ -467,7 +470,7 @@ def adaptive_peak_detection_amr(
             break
 
     layers = [step.layer for step in history]
-    centers = merge_centers(centers, f, ratio=0.9, n_samples=100)
+    # centers = merge_centers(centers, f, ratio=0.9, n_samples=100)
     return centers, init_centers, history, layers
 
 

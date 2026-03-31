@@ -130,7 +130,8 @@ def train_count_classifier(
         print(f"Count label counts: {counts.tolist()}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
+    # criterion = torch.nn.CrossEntropyLoss(weight=class_weights) # using weighted CE might trigger wierd problem
+    criterion = torch.nn.CrossEntropyLoss()
 
     for epoch in range(1, epochs + 1):
         model.train()

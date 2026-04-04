@@ -256,6 +256,12 @@ def adaptive_peak_detection(
     else:
         samples = grid_sampling(D, int(m_global))
     vals = f(samples)
+    
+    # handling no sol case i.e. flat landscape
+    if vals.max() < 0.3:
+        if verbose:
+            print(f"[init] max phi value {vals.max():.4f} < 0.3 -> no centers")
+        return np.empty((0, dim), dtype=np.float32), np.empty((0, dim), dtype=np.float32), [], []
     collected = samples[vals >= L_cut * float(vals.max())]
 
     if len(collected) == 0:

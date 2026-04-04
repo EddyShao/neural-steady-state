@@ -9,28 +9,28 @@ repo_root = exp_dir.parents[1]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from exps.feedback_loop._gen_data import build_run_config, generate_from_loaded_config
+from exps.gray_scott._gen_data import build_run_config, generate_from_loaded_config
 from psnn.config import cfg_get, dump_yaml, load_yaml
 from psnn.run_train import run_from_loaded_config
 
 
 def _default_run_dir(repo_root: Path, variant: str, seed: int) -> Path:
-    return repo_root / "runs" / "feedback_loop" / variant / f"seed_{seed}"
+    return repo_root / "runs" / "gray_scott" / variant / f"seed_{seed}"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate data and train the feedback-loop models.")
-    parser.add_argument("--config", type=str, default="configs/complete.yaml", help="Variant config under exps/feedback_loop.")
+    parser = argparse.ArgumentParser(description="Generate data and train the Gray-Scott models.")
+    parser.add_argument("--config", type=str, default="configs/complete.yaml", help="Variant config under exps/gray_scott.")
     parser.add_argument("--seed", type=int, default=None, help="Override the config seed for this run.")
     parser.add_argument("--output-dir", type=str, default=None, help="Base directory for the repo. Defaults to the parent of the exp dir.")
-    parser.add_argument("--run-dir", type=str, default=None, help="Run directory. Defaults to runs/feedback_loop/<variant>/seed_<seed>.")
+    parser.add_argument("--run-dir", type=str, default=None, help="Run directory. Defaults to runs/gray_scott/<variant>/seed_<seed>.")
     parser.add_argument("--write-config", type=str, default=None, help="Optionally write the merged run config to a file.")
     parser.add_argument("--skip-data", action="store_true", help="Skip data generation and train from existing data in the run dir.")
     args = parser.parse_args()
 
     config_path = (exp_dir / args.config).resolve()
     raw_cfg = load_yaml(config_path)
-    seed = int(args.seed if args.seed is not None else cfg_get(raw_cfg, "seed", 42))
+    seed = int(args.seed if args.seed is not None else cfg_get(raw_cfg, "seed", 123))
     variant = str(cfg_get(raw_cfg, "run.variant", config_path.stem))
     base_root = Path(args.output_dir).resolve() if args.output_dir else repo_root
     run_dir = Path(args.run_dir).resolve() if args.run_dir else _default_run_dir(base_root, variant, seed)

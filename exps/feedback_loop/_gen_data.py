@@ -348,9 +348,12 @@ def generate_from_loaded_config(cfg: dict, base_dir: str | Path) -> None:
     out_dir = resolve_path(base_dir, cfg_get(out_cfg, "out_dir", "data"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    train_seed = int(cfg_get(train_cfg, "seed", global_seed))
+    test_seed = int(cfg_get(test_cfg, "seed", train_seed + 1))
+
     data_train_phi, obs_train = gen_data(
         cfg_get(train_cfg, "N_obs", 1200),
-        seed=global_seed,
+        seed=train_seed,
         method_theta=cfg_get(train_cfg, "method_theta", "uniform"),
         method_u=cfg_get(train_cfg, "method_u", "resample"),
         n_local_base=cfg_get(train_cfg, "n_local_base", 60),
@@ -364,7 +367,7 @@ def generate_from_loaded_config(cfg: dict, base_dir: str | Path) -> None:
     )
     data_test_phi, obs_test = gen_data(
         cfg_get(test_cfg, "N_obs", 600),
-        seed=global_seed + 1,
+        seed=test_seed,
         method_theta=cfg_get(test_cfg, "method_theta", "uniform"),
         method_u=cfg_get(test_cfg, "method_u", "resample"),
         n_local_base=cfg_get(test_cfg, "n_local_base", 60),

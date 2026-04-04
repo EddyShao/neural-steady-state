@@ -1,0 +1,8 @@
+inherits: ../base.yaml
+
+run:
+  variant: incomplete_20_single_branch
+
+data_generation:
+  incomplete_rate: 0.2
+  incomplete_mode: single_branch 

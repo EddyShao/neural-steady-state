@@ -470,7 +470,7 @@ def adaptive_peak_detection_amr(
             break
 
     layers = [step.layer for step in history]
-    # centers = merge_centers(centers, f, ratio=0.9, n_samples=100)
+    centers = merge_centers(centers, f, ratio=0.9, n_samples=100)
     return centers, init_centers, history, layers
 
 

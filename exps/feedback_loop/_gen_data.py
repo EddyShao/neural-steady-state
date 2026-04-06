@@ -266,10 +266,14 @@ def gen_data(
         raise NotImplementedError(f"method_theta={method_theta} not implemented")
 
     theta_list = rng.uniform(theta_bounds[:, 0], theta_bounds[:, 1], size=(N_obs, 4))
-    observations: list[dict] = []
+    observations_complete: list[dict] = []
     for theta in theta_list:
-        observations.append({"Theta": np.array(theta, dtype=np.float32), "U": U(theta)})
-    observations = _corrupt_multi_solution_observations(observations, rng=rng, corruption_rate=corruption_rate)
+        observations_complete.append({"Theta": np.array(theta, dtype=np.float32), "U": U(theta)})
+    observations = _corrupt_multi_solution_observations(
+        observations_complete,
+        rng=rng,
+        corruption_rate=corruption_rate,
+    )
 
     theta_out_list = []
     u_out_list = []
@@ -320,7 +324,7 @@ def gen_data(
         "U": np.vstack(u_out_list).astype(np.float32),
         "Phi": np.hstack(phi_out_list).astype(np.float32),
     }
-    return data_phi, observations
+    return data_phi, observations, observations_complete
 
 
 def generate_from_loaded_config(cfg: dict, base_dir: str | Path) -> None:
@@ -351,7 +355,7 @@ def generate_from_loaded_config(cfg: dict, base_dir: str | Path) -> None:
     train_seed = int(cfg_get(train_cfg, "seed", global_seed))
     test_seed = int(cfg_get(test_cfg, "seed", train_seed + 1))
 
-    data_train_phi, obs_train = gen_data(
+    data_train_phi, obs_train, obs_train_complete = gen_data(
         cfg_get(train_cfg, "N_obs", 1200),
         seed=train_seed,
         method_theta=cfg_get(train_cfg, "method_theta", "uniform"),
@@ -365,7 +369,7 @@ def generate_from_loaded_config(cfg: dict, base_dir: str | Path) -> None:
         u_bounds=u_bounds,
         corruption_rate=corruption_rate,
     )
-    data_test_phi, obs_test = gen_data(
+    data_test_phi, obs_test, _obs_test_complete = gen_data(
         cfg_get(test_cfg, "N_obs", 600),
         seed=test_seed,
         method_theta=cfg_get(test_cfg, "method_theta", "uniform"),
@@ -379,11 +383,17 @@ def generate_from_loaded_config(cfg: dict, base_dir: str | Path) -> None:
         u_bounds=u_bounds,
         corruption_rate=0.0,
     )
+    obs_missing = [
+        obs_complete
+        for obs_complete, obs_corrupted in zip(obs_train_complete, obs_train)
+        if len(obs_corrupted["U"]) < len(obs_complete["U"])
+    ]
 
     np.savez_compressed(out_dir / cfg_get(out_cfg, "data_train_npz", "feedback_loop_data_train.npz"), **data_train_phi)
     np.savez_compressed(out_dir / cfg_get(out_cfg, "data_test_npz", "feedback_loop_data_test.npz"), **data_test_phi)
     joblib.dump(obs_train, out_dir / cfg_get(out_cfg, "obs_train_pkl", "feedback_loop_obs_train.pkl"))
     joblib.dump(obs_test, out_dir / cfg_get(out_cfg, "obs_test_pkl", "feedback_loop_obs_test.pkl"))
+    joblib.dump(obs_missing, out_dir / cfg_get(out_cfg, "obs_missing_pkl", "feedback_loop_obs_missing.pkl"))
 
 
 def generate_from_config(config_path: str | Path | None = None) -> None:

@@ -191,7 +191,7 @@ def gen_data(
     delta_default: float = 1.0,
     incomplete_rate: float = 0.0,
     incomplete_mode: str = "random_solution",
-) -> tuple[dict[str, np.ndarray], list[dict[str, Any]]]:
+) -> tuple[dict[str, np.ndarray], list[dict[str, Any]], list[dict[str, Any]]]:
     rng = np.random.default_rng(int(seed))
     theta_bounds = OMEGA if theta_bounds is None else np.asarray(theta_bounds, dtype=float)
     u_bounds = D if u_bounds is None else np.asarray(u_bounds, dtype=float)
@@ -208,16 +208,16 @@ def gen_data(
     else:
         raise NotImplementedError(f"method_theta={method_theta!r} not implemented")
 
-    observations: list[dict[str, Any]] = []
+    observations_complete: list[dict[str, Any]] = []
     for theta in theta_list:
-        observations.append(
+        observations_complete.append(
             {
                 "Theta": np.asarray(theta, dtype=np.float32),
                 "U": U(np.asarray(theta, dtype=float)),
             }
         )
     observations = _corrupt_two_solution_observations(
-        observations,
+        observations_complete,
         rng=rng,
         incomplete_rate=incomplete_rate,
         incomplete_mode=incomplete_mode,
@@ -253,7 +253,7 @@ def gen_data(
         "U": np.vstack(u_out_list).astype(np.float32),
         "Phi": np.hstack(phi_out_list).astype(np.float32),
     }
-    return phi_data, observations
+    return phi_data, observations, observations_complete
 
 
 def generate_from_loaded_config(cfg: dict[str, Any], base_dir: str | Path) -> None:
@@ -285,7 +285,7 @@ def generate_from_loaded_config(cfg: dict[str, Any], base_dir: str | Path) -> No
     train_seed = int(cfg_get(train_cfg, "seed", global_seed))
     test_seed = int(cfg_get(test_cfg, "seed", train_seed + 1))
 
-    data_train_phi, obs_train = gen_data(
+    data_train_phi, obs_train, obs_train_complete = gen_data(
         cfg_get(train_cfg, "N_obs", 1000),
         cfg_get(train_cfg, "N_random", 200),
         seed=train_seed,
@@ -298,7 +298,7 @@ def generate_from_loaded_config(cfg: dict[str, Any], base_dir: str | Path) -> No
         incomplete_rate=incomplete_rate,
         incomplete_mode=incomplete_mode,
     )
-    data_test_phi, obs_test = gen_data(
+    data_test_phi, obs_test, _obs_test_complete = gen_data(
         cfg_get(test_cfg, "N_obs", 600),
         cfg_get(test_cfg, "N_random", 200),
         seed=test_seed,
@@ -310,11 +310,17 @@ def generate_from_loaded_config(cfg: dict[str, Any], base_dir: str | Path) -> No
         delta_default=float(cfg_get(dg, "delta.delta_default", cfg_get(dg, "delta.delta1", 1.0))),
         incomplete_rate=0.0,
     )
+    obs_missing = [
+        obs_complete
+        for obs_complete, obs_incomplete in zip(obs_train_complete, obs_train)
+        if len(obs_incomplete["U"]) < len(obs_complete["U"])
+    ]
 
     np.savez_compressed(out_dir / cfg_get(out_cfg, "data_train_npz", "gray_scott_data_train.npz"), **data_train_phi)
     np.savez_compressed(out_dir / cfg_get(out_cfg, "data_test_npz", "gray_scott_data_test.npz"), **data_test_phi)
     joblib.dump(obs_train, out_dir / cfg_get(out_cfg, "obs_train_pkl", "gray_scott_obs_train.pkl"))
     joblib.dump(obs_test, out_dir / cfg_get(out_cfg, "obs_test_pkl", "gray_scott_obs_test.pkl"))
+    joblib.dump(obs_missing, out_dir / cfg_get(out_cfg, "obs_missing_pkl", "gray_scott_obs_missing.pkl"))
 
 
 def generate_from_config(config_path: str | Path | None = None) -> None:

@@ -49,6 +49,8 @@ def main() -> None:
         str(config_path),
         "--phi-ckpt",
         str(run_dir / "psnn_phi.pt"),
+        "--stability-ckpt",
+        str(run_dir / "psnn_stability_cls.pt"),
         "--obs-path",
         str(run_dir / "data" / "gray_scott_obs_test.pkl"),
         "--out-root",

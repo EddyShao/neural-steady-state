@@ -20,10 +20,12 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from exps.feedback_loop._eval_common import (
+    attach_missing_metrics,
     aggregate_evaluation_results,
     evaluate_observations,
     load_observations,
     load_true_solutions,
+    load_true_stability,
     save_outputs,
 )
 
@@ -33,16 +35,17 @@ from psnn.loaders import load_inference_functions
 
 
 _WORKER_PHI_FN = None
+_WORKER_STABILITY_FN = None
 
 
 # ----------------------------------------------------------
 # Worker initialization
 # ----------------------------------------------------------
 
-def _init_worker(phi_ckpt: str) -> None:
+def _init_worker(phi_ckpt: str, stability_ckpt: str) -> None:
     """Initialize model inside each worker process."""
 
-    global _WORKER_PHI_FN
+    global _WORKER_PHI_FN, _WORKER_STABILITY_FN
 
     torch.set_grad_enabled(False)
 
@@ -52,15 +55,17 @@ def _init_worker(phi_ckpt: str) -> None:
     except Exception:
         pass
 
-    phi_fn, _, _ = load_inference_functions(
+    phi_fn, _, stability_fn = load_inference_functions(
         phi_ckpt=phi_ckpt,
+        stability_ckpt=stability_ckpt,
         device=torch.device("cpu"),
     )
 
-    if phi_fn is None:
-        raise RuntimeError("Worker failed to load phi inference function")
+    if phi_fn is None or stability_fn is None:
+        raise RuntimeError("Worker failed to load phi/stability inference functions")
 
     _WORKER_PHI_FN = phi_fn
+    _WORKER_STABILITY_FN = stability_fn
 
 
 # ----------------------------------------------------------
@@ -68,9 +73,9 @@ def _init_worker(phi_ckpt: str) -> None:
 # ----------------------------------------------------------
 
 def _run_one(task):
-    idx, theta, true_solutions, D, locator_kwargs = task
+    idx, theta, true_solutions, true_stability, D, locator_kwargs = task
 
-    if _WORKER_PHI_FN is None:
+    if _WORKER_PHI_FN is None or _WORKER_STABILITY_FN is None:
         raise RuntimeError("Worker inference function not initialized")
 
     # make RNG per task deterministic but different
@@ -85,10 +90,14 @@ def _run_one(task):
         **locator_kwargs,
     )
 
+    pred_stability = np.asarray(_WORKER_STABILITY_FN(theta, pred_solutions) >= 0.5, dtype=bool)
+
     return (
         np.asarray(theta, dtype=np.float32),
         np.asarray(true_solutions, dtype=np.float32),
         np.asarray(pred_solutions, dtype=np.float32),
+        np.asarray(true_stability, dtype=bool),
+        pred_stability,
     )
 
 
@@ -104,6 +113,11 @@ def _device_from_arg(device: str) -> torch.device:
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     return torch.device(device)
+
+
+def _require_existing_file(path: str, label: str) -> None:
+    if not Path(path).exists():
+        raise FileNotFoundError(f"{label} not found: {path}")
 
 
 # ----------------------------------------------------------
@@ -143,11 +157,21 @@ def main():
         type=str,
         default=str(resolve_path(exp_dir, cfg_get(path_cfg, "phi_ckpt", "psnn_phi.pt"))),
     )
+    p.add_argument(
+        "--stability-ckpt",
+        type=str,
+        default=str(resolve_path(exp_dir, cfg_get(path_cfg, "stability_ckpt", "psnn_stability_cls.pt"))),
+    )
 
     p.add_argument(
         "--obs-path",
         type=str,
         default=str(resolve_path(exp_dir, cfg_get(data_outputs_cfg, "obs_test", "feedback_loop_obs_test.pkl"))),
+    )
+    p.add_argument(
+        "--obs-missing-path",
+        type=str,
+        default=str(resolve_path(exp_dir, cfg_get(data_outputs_cfg, "obs_missing_pkl", "feedback_loop_obs_missing.pkl"))),
     )
 
     p.add_argument("--device", type=str, default="auto")
@@ -177,6 +201,10 @@ def main():
 
     args = p.parse_args()
 
+    _require_existing_file(args.phi_ckpt, "Phi checkpoint")
+    _require_existing_file(args.stability_ckpt, "Stability checkpoint")
+    _require_existing_file(args.obs_path, "Observation file")
+
     device = _device_from_arg(args.device)
 
     # ---------- domain ----------
@@ -200,11 +228,16 @@ def main():
 
     # ---------- load observations ----------
 
-    obs = load_observations(
-        args.obs_path,
-        limit=args.limit,
-        sample_size=args.sample_size,
-        sample_seed=args.sample_seed,
+    obs = load_observations(args.obs_path, limit=args.limit, sample_size=args.sample_size, sample_seed=args.sample_seed)
+    obs_missing = (
+        load_observations(
+            args.obs_missing_path,
+            limit=args.limit,
+            sample_size=args.sample_size,
+            sample_seed=args.sample_seed,
+        )
+        if Path(args.obs_missing_path).exists()
+        else []
     )
 
     locator_kwargs = dict(
@@ -220,85 +253,18 @@ def main():
         verbose=False,
     )
 
-    # ---------- SERIAL ----------
-
-    if num_procs <= 1:
-
-        phi_fn, _, _ = load_inference_functions(
-            phi_ckpt=args.phi_ckpt,
-            device=device,
-        )
-
-        def predict_fn(theta):
-
-            phi_u = phi_fn(theta)
-
-            centers, _, _, _ = adaptive_peak_detection(
-                phi_u,
-                D,
-                **locator_kwargs,
-            )
-
-            return centers
-
-        metrics, details = evaluate_observations(
-            obs,
-            predict_fn=predict_fn,
-            count_source="flexible_final_solution_count",
-        )
-
-    # ---------- PARALLEL ----------
-
-    else:
-
-        try:
-
-            ctx = mp.get_context("fork")
-
-            tasks = [
-                (
-                    i,
-                    np.asarray(entry["Theta"], dtype=np.float32).reshape(-1),
-                    load_true_solutions(entry),
-                    D,
-                    locator_kwargs,
-                )
-                for i, entry in enumerate(obs)
-            ]
-
-            results = []
-
-            with ctx.Pool(
-                processes=num_procs,
-                initializer=_init_worker,
-                initargs=(str(args.phi_ckpt),),
-            ) as pool:
-
-                for item in tqdm.tqdm(
-                    pool.imap(_run_one, tasks, chunksize=4),
-                    total=len(tasks),
-                    desc=f"Evaluating test observations (x{num_procs})",
-                ):
-                    results.append(item)
-
-            metrics, details = aggregate_evaluation_results(
-                results,
-                count_source="flexible_final_solution_count",
-            )
-
-        except Exception as exc:
-
-            warnings.warn(f"Parallel evaluation failed ({exc}); falling back to serial")
-
-            phi_fn, _, _ = load_inference_functions(
+    def evaluate_dataset(obs_data):
+        if num_procs <= 1:
+            phi_fn, _, stability_fn = load_inference_functions(
                 phi_ckpt=args.phi_ckpt,
+                stability_ckpt=args.stability_ckpt,
                 device=device,
             )
+            if phi_fn is None or stability_fn is None:
+                raise RuntimeError("Failed to load phi/stability inference functions")
 
             def predict_fn(theta):
-
                 phi_u = phi_fn(theta)
-
                 centers, _, _, _ = adaptive_peak_detection(
                     phi_u,
                     D,
@@ -307,11 +273,81 @@ def main():
 
                 return centers
 
-            metrics, details = evaluate_observations(
-                obs,
+            def predict_stability_fn(theta, centers):
+                return np.asarray(stability_fn(theta, centers) >= 0.5, dtype=bool)
+
+            return evaluate_observations(
+                obs_data,
                 predict_fn=predict_fn,
+                predict_stability_fn=predict_stability_fn,
                 count_source="flexible_final_solution_count",
             )
+
+        try:
+            ctx = mp.get_context("spawn")
+            tasks = [
+                (
+                    i,
+                    np.asarray(entry["Theta"], dtype=np.float32).reshape(-1),
+                    load_true_solutions(entry),
+                    load_true_stability(entry),
+                    D,
+                    locator_kwargs,
+                )
+                for i, entry in enumerate(obs_data)
+            ]
+            results = []
+            with ctx.Pool(
+                processes=num_procs,
+                initializer=_init_worker,
+                initargs=(str(args.phi_ckpt), str(args.stability_ckpt)),
+            ) as pool:
+                for item in tqdm.tqdm(
+                    pool.imap(_run_one, tasks, chunksize=4),
+                    total=len(tasks),
+                    desc=f"Evaluating test observations (x{num_procs})",
+                ):
+                    results.append(item)
+            return aggregate_evaluation_results(
+                results,
+                count_source="flexible_final_solution_count",
+            )
+        except Exception as exc:
+            warnings.warn(f"Parallel evaluation failed ({exc}); falling back to serial")
+            phi_fn, _, stability_fn = load_inference_functions(
+                phi_ckpt=args.phi_ckpt,
+                stability_ckpt=args.stability_ckpt,
+                device=device,
+            )
+            if phi_fn is None or stability_fn is None:
+                raise RuntimeError("Failed to load phi/stability inference functions")
+
+            def predict_fn(theta):
+                phi_u = phi_fn(theta)
+                centers, _, _, _ = adaptive_peak_detection(
+                    phi_u,
+                    D,
+                    **locator_kwargs,
+                )
+                return centers
+
+            def predict_stability_fn(theta, centers):
+                return np.asarray(stability_fn(theta, centers) >= 0.5, dtype=bool)
+
+            return evaluate_observations(
+                obs_data,
+                predict_fn=predict_fn,
+                predict_stability_fn=predict_stability_fn,
+                count_source="flexible_final_solution_count",
+            )
+
+    metrics, details = evaluate_dataset(obs)
+    metrics_missing = None if len(obs_missing) == 0 else evaluate_dataset(obs_missing)[0]
+    metrics, details = attach_missing_metrics(
+        metrics,
+        details,
+        metrics_missing=metrics_missing,
+    )
 
     # ---------- SAVE ----------
 
@@ -327,6 +363,10 @@ def main():
     print(f"Observation test set: {metrics['num_samples']} theta")
     print(f"Count accuracy: {metrics['count_accuracy']:.6f}")
     print(f"Mean L2 (correct): {metrics['mean_l2_correctly_counted_theta']:.6f}")
+    print(f"Stability accuracy (correct): {metrics['stability_accuracy_correctly_counted_theta']:.6f}")
+    print(f"Count accuracy (missing): {metrics['count_accuracy_missing']}")
+    print(f"Mean L2 (missing): {metrics['mean_l2_correctly_counted_theta_missing']}")
+    print(f"Stability accuracy (missing): {metrics['stability_accuracy_correctly_counted_theta_missing']}")
 
     print(f"Saved metrics to {json_path}")
     print(f"Saved details to {npz_path}")

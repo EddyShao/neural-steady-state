@@ -35,6 +35,7 @@ data_generation:
     data_test_npz: feedback_loop_data_test.npz
     obs_train_pkl: feedback_loop_obs_train.pkl
     obs_test_pkl: feedback_loop_obs_test.pkl
+    obs_missing_pkl: feedback_loop_obs_missing.pkl
 
 training:
   device: auto
@@ -45,8 +46,8 @@ training:
     epochs: 150
     lr: 1e-3
     model:
-      embed_dim: 10
-      width: [60, 100]
+      embed_dim: 16
+      width: [80, 120]
       depth: [2, 3]
     eta:
       scale: 1.5

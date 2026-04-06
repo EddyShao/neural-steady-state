@@ -65,7 +65,7 @@ def make_loaders(train_npz, test_npz, batch_size=1024, num_workers=0, device=Non
 
 class ThetaCountDataset(Dataset):
     """Dataset of (Theta, count) from observation pickles."""
-    def __init__(self, obs_path: str, device: str = None):
+    def __init__(self, obs_path: str, device: str = None, *, class_values: np.ndarray | None = None):
         super().__init__()
         obs = joblib.load(obs_path)
         thetas = []
@@ -76,7 +76,18 @@ class ThetaCountDataset(Dataset):
 
         raw_counts = np.asarray(raw_counts, dtype=np.int64)
         # Map possibly non-contiguous counts (e.g. {2,4}) to contiguous class IDs {0,1}.
-        class_values = np.unique(raw_counts)
+        # IMPORTANT: train/test splits must use the same mapping; pass class_values explicitly
+        # (e.g. the union over both splits) to get meaningful validation accuracy.
+        if class_values is None:
+            class_values = np.unique(raw_counts)
+        else:
+            class_values = np.asarray(class_values, dtype=np.int64).reshape(-1)
+            # Ensure all labels in this split are representable.
+            missing = np.setdiff1d(np.unique(raw_counts), class_values)
+            if missing.size > 0:
+                raise ValueError(
+                    f"ThetaCountDataset: provided class_values={class_values.tolist()} is missing counts={missing.tolist()}"
+                )
         count_to_class = {int(v): int(i) for i, v in enumerate(class_values.tolist())}
         labels = np.asarray([count_to_class[int(v)] for v in raw_counts.tolist()], dtype=np.int64)
 
@@ -129,8 +140,17 @@ class ThetaStabilityDataset(Dataset):
 
 def make_obs_loaders(train_obs, test_obs, batch_size=1024, num_workers=0, device=None, mode="count"):
     if mode == "count":
-        train_ds = ThetaCountDataset(train_obs, device=device)
-        test_ds = ThetaCountDataset(test_obs, device=device)
+        # Use a shared count->class mapping across train/test.
+        # This avoids misleading validation accuracy when the set of observed counts differs
+        # between splits (e.g. incomplete/bias introduces a "1-solution" class in train only).
+        train_list = joblib.load(train_obs)
+        test_list = joblib.load(test_obs)
+        train_counts = np.asarray([int(len(e.get("U", []))) for e in train_list], dtype=np.int64)
+        test_counts = np.asarray([int(len(e.get("U", []))) for e in test_list], dtype=np.int64)
+        class_values = np.unique(np.concatenate([train_counts, test_counts], axis=0))
+
+        train_ds = ThetaCountDataset(train_obs, device=device, class_values=class_values)
+        test_ds = ThetaCountDataset(test_obs, device=device, class_values=class_values)
     elif mode == "stability":
         train_ds = ThetaStabilityDataset(train_obs, device=device)
         test_ds = ThetaStabilityDataset(test_obs, device=device)

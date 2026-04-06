@@ -162,7 +162,13 @@ def cluster_points(
         radius = float(np.max(np.linalg.norm(points - center, axis=1))) if n > 0 else 0.0
         return center, np.asarray([radius], dtype=np.float32)
 
-    candidate_C = list(range(2, min(C_max, n - 1) + 1))
+    n_unique = len(np.unique(points, axis=0))
+    if n_unique <= 1:
+        center = np.mean(points, axis=0, keepdims=True)
+        radius = np.max(np.linalg.norm(points - center, axis=1))
+        return center, np.array([radius])
+
+    candidate_C = list(range(2, min(C_max, n - 1, n_unique) + 1))
     scores: dict[int, tuple[float, np.ndarray, np.ndarray]] = {}
 
     for k in candidate_C:
@@ -398,6 +404,26 @@ def adaptive_peak_detection(
                 f"{_fmt_budget(int(N), method=ball_method, label='local')} flags={flags} "
                 f"collected={len(collected)} new_centers={np.asarray(new_centers).tolist()}"
             )
+
+        if len(final_centers) + len(queue) > int(C_max):
+            pooled_centers = np.asarray(final_centers + [item[0] for item in queue], dtype=np.float32)
+            merged_centers, _ = cluster_points(
+                pooled_centers,
+                C_max,
+                random_state=random_state,
+                f=f,
+                valley_ratio=float(valley_ratio),
+                sil_var_thres=float(sil_var_thres),
+            )
+            final_centers = [np.asarray(c, dtype=np.float32) for c in merged_centers]
+            final_layers = []
+            if verbose:
+                print(
+                    f"[layer {layer} event {event}] fallback(cluster) "
+                    f"final={len(final_centers)} queue={len(queue)} > C_max={int(C_max)} "
+                    f"-> merged_centers={merged_centers.tolist()}"
+                )
+            break
 
     return np.array(final_centers, dtype=np.float32), np.asarray(init_centers, dtype=np.float32), history, final_layers
 

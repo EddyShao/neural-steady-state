@@ -76,6 +76,15 @@ def uniform_ball_sampling(center: np.ndarray, radius: float, N: int, rng: np.ran
     return center.reshape(1, -1) + directions * (radii * float(radius))
 
 
+def _max_radius_inside_domain(center: np.ndarray, D: list[list[float]]) -> float:
+    """Largest radius such that center +/- radius stays inside the box domain D."""
+    center = np.asarray(center, dtype=np.float32).reshape(-1)
+    low = np.asarray([bounds[0] for bounds in D], dtype=np.float32)
+    high = np.asarray([bounds[1] for bounds in D], dtype=np.float32)
+    margin = np.minimum(center - low, high - center)
+    return float(max(np.min(margin), 0.0))
+
+
 # -------------------------
 # Clustering + radii
 # -------------------------
@@ -404,7 +413,7 @@ def adaptive_peak_detection_amr(
         n_col_total = 0
 
         for c, r in zip(merged_centers, merged_radii):
-            r_use = float(max(r, 1e-6))
+            r_use = min(float(max(r, 1e-6)), _max_radius_inside_domain(c, D))
 
             if ball_method == "uniform":
                 local = uniform_ball_sampling(c, r_use, int(N_global), rng)

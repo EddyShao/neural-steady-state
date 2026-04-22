@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw a Gray-Scott bifurcation diagram using the strict locator."""
+"""Draw a Gray-Scott phase diagram using the strict locator."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import warnings
 from pathlib import Path
 
 import matplotlib
+import matplotlib.colors as mcolors
+import matplotlib.patches as mpatches
 import numpy as np
 import tqdm
 
@@ -95,30 +97,46 @@ def _predict_centers(phi_fn, count_fn, theta: np.ndarray, domain_bounds: list[li
     return centers
 
 
-def _run_one_f(task: tuple) -> tuple:
+def _signature_from_stability(stability: np.ndarray | list[bool]) -> tuple[int, int]:
+    stable_np = np.asarray(stability, dtype=bool).reshape(-1)
+    return int(stable_np.size), int(np.count_nonzero(stable_np))
+
+
+def _signature_label(signature: tuple[int, int]) -> str:
+    n_sol, n_stable = map(int, signature)
+    if n_sol == 0:
+        return "0 sol"
+    n_unstable = n_sol - n_stable
+    sol_word = "sol" if n_sol == 1 else "sols"
+    return f"{n_sol} {sol_word} ({n_stable} stable, {n_unstable} unstable)"
+
+
+def _build_palette(n_categories: int) -> list[tuple[float, float, float, float]]:
+    if n_categories <= 10:
+        cmap = plt.get_cmap("tab10", max(n_categories, 1))
+        return [cmap(i) for i in range(n_categories)]
+    cmap = plt.get_cmap("tab20", max(n_categories, 1))
+    return [cmap(i) for i in range(n_categories)]
+
+
+def _run_one_theta(task: tuple) -> tuple:
     f_value, k_value, domain_bounds, locator_kwargs, stable_thresh = task
     theta = _theta_from_components(float(f_value), float(k_value))
 
-    tru = true_U(theta)
-    true_u: list[list[float]] = []
-    true_stable: list[bool] = []
-    for sol in tru:
-        true_u.append([float(sol["u"][0]), float(sol["u"][1])])
-        true_stable.append(bool(sol["stable"]))
+    true_stability = np.asarray([bool(sol["stable"]) for sol in true_U(theta)], dtype=bool)
+    true_signature = _signature_from_stability(true_stability)
 
     if _WORKER_PHI_FN is None or _WORKER_COUNT_FN is None or _WORKER_STABILITY_FN is None:
         raise RuntimeError("Worker inference functions are not initialized")
 
     centers = _predict_centers(_WORKER_PHI_FN, _WORKER_COUNT_FN, theta, domain_bounds, locator_kwargs)
-    pred_u: list[list[float]] = []
-    pred_stable: list[bool] = []
-    if centers.size != 0:
+    if centers.size == 0:
+        pred_signature = (0, 0)
+    else:
         p_stable = _WORKER_STABILITY_FN(theta, centers)
-        for u, prob in zip(centers, p_stable):
-            pred_u.append([float(u[0]), float(u[1])])
-            pred_stable.append(bool(float(prob) >= float(stable_thresh)))
+        pred_signature = _signature_from_stability(np.asarray(p_stable, dtype=float) >= float(stable_thresh))
 
-    return (float(f_value), true_u, true_stable, pred_u, pred_stable)
+    return float(f_value), float(k_value), true_signature, pred_signature
 
 
 def main() -> None:
@@ -131,7 +149,6 @@ def main() -> None:
     path_cfg = cfg_get(cfg, "training.paths", {})
     u_bounds_cfg = cfg_get(cfg, "data_generation.domain.u_bounds", [[-0.2, 1.2], [-0.2, 1.2]])
     theta_bounds_cfg = cfg_get(cfg, "data_generation.domain.theta_bounds", [[0.0, 0.3], [0.0, 0.08]])
-
     flat_u_bounds = [
         float(u_bounds_cfg[0][0]),
         float(u_bounds_cfg[0][1]),
@@ -139,17 +156,19 @@ def main() -> None:
         float(u_bounds_cfg[1][1]),
     ]
 
-    p = argparse.ArgumentParser(description="Bifurcation diagram using strict locator + count classifier")
+    p = argparse.ArgumentParser(description="Phase diagram using strict locator + count classifier")
     p.add_argument("--config", type=str, default=str(pre_args.config))
     p.add_argument("--phi-ckpt", type=str, default=str(resolve_path(exp_dir, cfg_get(path_cfg, "phi_ckpt", "psnn_phi.pt"))))
     p.add_argument("--count-ckpt", type=str, default=str(resolve_path(exp_dir, cfg_get(path_cfg, "count_ckpt", "psnn_numsol.pt"))))
     p.add_argument("--stability-ckpt", type=str, default=str(resolve_path(exp_dir, cfg_get(path_cfg, "stability_ckpt", "psnn_stability_cls.pt"))))
     p.add_argument("--device", type=str, default=cfg_get(cfg, "training.device", "auto"), choices=["auto", "cpu", "cuda"])
     p.add_argument("--num-procs", type=int, default=0, help="CPU processes for parallel sweep. 0=auto, 1=serial.")
-    p.add_argument("--k", type=float, default=float(theta_bounds_cfg[1][1]) / 2.0)
     p.add_argument("--f-min", type=float, default=float(theta_bounds_cfg[0][0]))
     p.add_argument("--f-max", type=float, default=float(theta_bounds_cfg[0][1]))
-    p.add_argument("--f-steps", type=int, default=101)
+    p.add_argument("--f-steps", type=int, default=121)
+    p.add_argument("--k-min", type=float, default=float(theta_bounds_cfg[1][0]))
+    p.add_argument("--k-max", type=float, default=float(theta_bounds_cfg[1][1]))
+    p.add_argument("--k-steps", type=int, default=81)
     p.add_argument("--u-bounds", type=float, nargs=4, default=flat_u_bounds, help="2D bounds for u as: u0_low u0_high u1_low u1_high")
     p.add_argument("--L-cut", type=float, default=0.48)
     p.add_argument("--N-global", type=int, default=3000)
@@ -161,7 +180,7 @@ def main() -> None:
     p.add_argument("--merge-ratio", type=float, default=1.1)
     p.add_argument("--random-state", type=int, default=int(cfg_get(cfg, "seed", 0)))
     p.add_argument("--verbose", action="store_true")
-    p.add_argument("--out-root", type=str, default=os.path.join(exp_dir, "bifur_strict_runs"))
+    p.add_argument("--out-root", type=str, default=os.path.join(exp_dir, "phase_strict_runs"))
     args = p.parse_args()
 
     device = _device_from_arg(args.device)
@@ -191,10 +210,10 @@ def main() -> None:
             raise RuntimeError("Failed to load inference functions")
 
     f_grid = np.linspace(float(args.f_min), float(args.f_max), int(args.f_steps), dtype=np.float32)
-    pred_centers_by_f: list[np.ndarray] = []
-    pred_stability_by_f: list[np.ndarray] = []
-    true_centers_by_f: list[np.ndarray] = []
-    true_stability_by_f: list[np.ndarray] = []
+    k_grid = np.linspace(float(args.k_min), float(args.k_max), int(args.k_steps), dtype=np.float32)
+
+    true_signatures = np.zeros((len(k_grid), len(f_grid), 2), dtype=np.int16)
+    pred_signatures = np.zeros((len(k_grid), len(f_grid), 2), dtype=np.int16)
 
     locator_kwargs = dict(
         L_cut=float(args.L_cut),
@@ -211,23 +230,22 @@ def main() -> None:
     stable_thresh = 0.5
 
     if num_procs <= 1:
-        for f_value in tqdm.tqdm(f_grid, desc="Processing f values"):
-            theta = _theta_from_components(float(f_value), float(args.k))
-            tru = true_U(theta)
-            true_centers = np.asarray([[float(sol["u"][0]), float(sol["u"][1])] for sol in tru], dtype=np.float32).reshape(-1, 2)
-            true_stability = np.asarray([bool(sol["stable"]) for sol in tru], dtype=bool)
-            true_centers_by_f.append(true_centers)
-            true_stability_by_f.append(true_stability)
+        for k_idx, k_value in enumerate(tqdm.tqdm(k_grid, desc="Processing k values")):
+            for f_idx, f_value in enumerate(f_grid):
+                theta = _theta_from_components(float(f_value), float(k_value))
 
-            centers = _predict_centers(phi_fn, count_fn, theta, domain_bounds, locator_kwargs)
-            if centers.size == 0:
-                pred_centers_by_f.append(np.empty((0, 2), dtype=np.float32))
-                pred_stability_by_f.append(np.empty((0,), dtype=bool))
-                continue
+                true_stability = np.asarray([bool(sol["stable"]) for sol in true_U(theta)], dtype=bool)
+                true_signatures[k_idx, f_idx] = np.asarray(_signature_from_stability(true_stability), dtype=np.int16)
 
-            p_stable = stability_fn(theta, centers)
-            pred_centers_by_f.append(np.asarray(centers, dtype=np.float32))
-            pred_stability_by_f.append(np.asarray(p_stable >= stable_thresh, dtype=bool))
+                centers = _predict_centers(phi_fn, count_fn, theta, domain_bounds, locator_kwargs)
+                if centers.size == 0:
+                    pred_signatures[k_idx, f_idx] = np.asarray((0, 0), dtype=np.int16)
+                else:
+                    p_stable = stability_fn(theta, centers)
+                    pred_signatures[k_idx, f_idx] = np.asarray(
+                        _signature_from_stability(np.asarray(p_stable, dtype=float) >= stable_thresh),
+                        dtype=np.int16,
+                    )
     else:
         for ckpt in (args.phi_ckpt, args.count_ckpt, args.stability_ckpt):
             if not os.path.exists(ckpt):
@@ -237,11 +255,12 @@ def main() -> None:
         tasks = (
             (
                 float(f_value),
-                float(args.k),
+                float(k_value),
                 domain_bounds,
                 locator_kwargs,
                 stable_thresh,
             )
+            for k_value in k_grid
             for f_value in f_grid
         )
 
@@ -250,73 +269,90 @@ def main() -> None:
             initializer=_init_worker,
             initargs=(str(args.phi_ckpt), str(args.count_ckpt), str(args.stability_ckpt)),
         ) as pool:
-            for _f_value, t_u, t_stable, p_u, p_stable in tqdm.tqdm(
-                pool.imap(_run_one_f, tasks, chunksize=1),
-                total=len(f_grid),
-                desc=f"Processing f values (x{num_procs})",
+            for f_value, k_value, true_sig, pred_sig in tqdm.tqdm(
+                pool.imap(_run_one_theta, tasks, chunksize=1),
+                total=len(f_grid) * len(k_grid),
+                desc=f"Processing phase grid (x{num_procs})",
             ):
-                true_centers_by_f.append(np.asarray(t_u, dtype=np.float32).reshape(-1, 2))
-                true_stability_by_f.append(np.asarray(t_stable, dtype=bool))
-                pred_centers_by_f.append(np.asarray(p_u, dtype=np.float32).reshape(-1, 2))
-                pred_stability_by_f.append(np.asarray(p_stable, dtype=bool))
+                f_idx = int(np.argmin(np.abs(f_grid - np.float32(f_value))))
+                k_idx = int(np.argmin(np.abs(k_grid - np.float32(k_value))))
+                true_signatures[k_idx, f_idx] = np.asarray(true_sig, dtype=np.int16)
+                pred_signatures[k_idx, f_idx] = np.asarray(pred_sig, dtype=np.int16)
+
+    signature_set = {
+        tuple(map(int, sig))
+        for sig in np.concatenate(
+            [true_signatures.reshape(-1, 2), pred_signatures.reshape(-1, 2)],
+            axis=0,
+        )
+    }
+    ordered_signatures = sorted(signature_set, key=lambda item: (item[0], item[1]))
+    signature_to_code = {sig: idx for idx, sig in enumerate(ordered_signatures)}
+    code_to_label = [_signature_label(sig) for sig in ordered_signatures]
+
+    true_codes = np.asarray(
+        [[signature_to_code[tuple(map(int, sig))] for sig in row] for row in true_signatures],
+        dtype=np.int16,
+    )
+    pred_codes = np.asarray(
+        [[signature_to_code[tuple(map(int, sig))] for sig in row] for row in pred_signatures],
+        dtype=np.int16,
+    )
+
+    colors = _build_palette(len(ordered_signatures))
+    cmap = mcolors.ListedColormap(colors)
+    norm = mcolors.BoundaryNorm(np.arange(len(ordered_signatures) + 1) - 0.5, cmap.N)
+
+    fig, axes = plt.subplots(1, 2, figsize=(13.5, 5.0), sharex=True, sharey=True)
+    for ax, code_grid, title in (
+        (axes[0], true_codes, "True phase diagram"),
+        (axes[1], pred_codes, "Predicted phase diagram (strict locator)"),
+    ):
+        mesh = ax.pcolormesh(f_grid, k_grid, code_grid, cmap=cmap, norm=norm, shading="nearest")
+        mesh.set_rasterized(True)
+        ax.set_xlabel("f")
+        ax.set_ylabel("k")
+        ax.set_title(title)
+        ax.grid(True, alpha=0.15)
+
+    legend_handles = [mpatches.Patch(color=colors[idx], label=label) for idx, label in enumerate(code_to_label)]
+    fig.legend(handles=legend_handles, loc="lower center", ncol=min(3, max(1, len(legend_handles))), frameon=False)
+    fig.tight_layout(rect=(0.0, 0.12, 1.0, 1.0))
 
     out_dir = Path(args.out_root)
     out_dir.mkdir(parents=True, exist_ok=True)
     file_tag = f"strict_{str(args.sample_method).lower()}"
-    fig_path = out_dir / f"bifur_{file_tag}.png"
-    data_path = out_dir / f"bifur_{file_tag}_data.npz"
+    fig_path = out_dir / f"phase_{file_tag}.png"
+    data_path = out_dir / f"phase_{file_tag}_data.npz"
 
-    def _flatten_component(
-        f_values: np.ndarray,
-        centers_by_f: list[np.ndarray],
-        stability_by_f: list[np.ndarray],
-        component_idx: int,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        x_vals: list[float] = []
-        y_vals: list[float] = []
-        stable_vals: list[bool] = []
-        for f_value, centers, stable in zip(f_values, centers_by_f, stability_by_f):
-            for center, is_stable in zip(centers, stable):
-                x_vals.append(float(f_value))
-                y_vals.append(float(center[component_idx]))
-                stable_vals.append(bool(is_stable))
-        return np.asarray(x_vals, dtype=float), np.asarray(y_vals, dtype=float), np.asarray(stable_vals, dtype=bool)
-
-    fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.8), sharex=True)
-    for ax, component_idx, ylabel in zip(axes, (0, 1), ("u", "v")):
-        x_true_np, y_true_np, stable_true_np = _flatten_component(f_grid, true_centers_by_f, true_stability_by_f, component_idx)
-        x_pred_np, y_pred_np, stable_pred_np = _flatten_component(f_grid, pred_centers_by_f, pred_stability_by_f, component_idx)
-
-        if x_true_np.size > 0:
-            ax.scatter(x_true_np[stable_true_np], y_true_np[stable_true_np], s=10, c="0.75", marker="o", alpha=0.6, label="true stable")
-            ax.scatter(x_true_np[~stable_true_np], y_true_np[~stable_true_np], s=10, c="0.85", marker="x", alpha=0.6, label="true unstable")
-        if x_pred_np.size > 0:
-            ax.scatter(x_pred_np[stable_pred_np], y_pred_np[stable_pred_np], s=16, c="tab:blue", marker="o", alpha=0.9, label="pred stable")
-            ax.scatter(x_pred_np[~stable_pred_np], y_pred_np[~stable_pred_np], s=16, c="tab:orange", marker="x", alpha=0.9, label="pred unstable")
-
-        ax.set_xlabel("f")
-        ax.set_ylabel(ylabel)
-        ax.set_title(f"Gray-Scott bifurcation ({ylabel}, k={float(args.k):.4f})")
-        ax.grid(True, alpha=0.25)
-        ax.legend(loc="best", fontsize=9)
-
-    fig.tight_layout()
-    fig.savefig(fig_path, dpi=200)
+    fig.savefig(fig_path, dpi=220)
     plt.close(fig)
 
     np.savez(
         data_path,
-        metadata_json=np.asarray(json.dumps({"script": "_bifur_strict.py", "args": vars(args), "stable_threshold": stable_thresh}, sort_keys=True)),
+        metadata_json=np.asarray(
+            json.dumps(
+                {
+                    "script": "_phase_strict.py",
+                    "args": vars(args),
+                    "stable_threshold": stable_thresh,
+                    "signature_labels": code_to_label,
+                },
+                sort_keys=True,
+            )
+        ),
         f_grid=f_grid,
-        true_centers=np.asarray(true_centers_by_f, dtype=object),
-        true_stability=np.asarray(true_stability_by_f, dtype=object),
-        pred_centers=np.asarray(pred_centers_by_f, dtype=object),
-        pred_stability=np.asarray(pred_stability_by_f, dtype=object),
+        k_grid=k_grid,
+        true_signatures=true_signatures,
+        pred_signatures=pred_signatures,
+        true_codes=true_codes,
+        pred_codes=pred_codes,
+        signature_codes=np.asarray(ordered_signatures, dtype=np.int16),
     )
 
     print(f"Saved figure: {fig_path}")
     print(f"Saved data: {data_path}")
-    print(f"Predicted slices: {sum(len(v) for v in pred_centers_by_f)} | True slices: {sum(len(v) for v in true_centers_by_f)}")
+    print(f"Categories: {', '.join(code_to_label)}")
 
 
 if __name__ == "__main__":

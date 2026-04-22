@@ -1,0 +1,10 @@
+inherits: ./base.yaml
+
+run:
+  variant: test_1_d4_n4
+
+training:
+  phi:
+    model:
+      embed_dim: 4
+      depth: [4, 4]

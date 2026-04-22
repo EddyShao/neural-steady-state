@@ -1,0 +1,30 @@
+inherits: ../../base.yaml
+
+shared_dataset:
+  variant: test_2
+
+run:
+  variant: test_2_base
+
+data_generation:
+  train:
+    N_obs: [60, 60]
+    N_random: [20, 20]
+    method_theta: grid
+    method_u: grid
+  test:
+    N_obs: [60, 60]
+    N_random: [20, 20]
+    method_theta: grid
+    method_u: grid
+
+training:
+  phi:
+    model:
+      embed_dim: 8
+  approximation_eval:
+    enabled: true
+    theta_grid: [100, 100]
+    u_grid: [50, 50]
+    theta_batch_size: 64
+    metric_path: approximation_metrics.json

@@ -1,0 +1,10 @@
+inherits: ./base.yaml
+
+run:
+  variant: test_2_s1_w30_d8
+
+training:
+  phi:
+    model:
+      width: [30, 30]
+      depth: [4, 8]

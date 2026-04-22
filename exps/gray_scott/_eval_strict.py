@@ -131,12 +131,13 @@ def main() -> None:
     p.add_argument("--num-procs", type=int, default=0, help="CPU processes for parallel evaluation. 0=auto, 1=serial.")
     p.add_argument("--u-bounds", type=float, nargs=4, default=flat_u_bounds)
     p.add_argument("--L-cut", type=float, default=0.48)
-    p.add_argument("--N-global", type=int, default=3000)
-    p.add_argument("--m-global", type=int, default=55)
+    p.add_argument("--N-global", type=int, default=3600)
+    p.add_argument("--m-global", type=int, default=60)
     p.add_argument("--conv-th", type=float, default=1e-2)
     p.add_argument("--max-iter", type=int, default=25)
     p.add_argument("--sample-method", type=str, default="grid", choices=["grid", "uniform"])
     p.add_argument("--ball-method", type=str, default="grid", choices=["grid", "uniform"])
+    p.add_argument("--merge-ratio", type=float, default=1.1)
     p.add_argument("--random-state", type=int, default=int(cfg_get(cfg, "seed", 0)))
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--limit", type=int, default=None, help="Evaluate the first N observations.")
@@ -198,6 +199,7 @@ def main() -> None:
         max_iter=int(args.max_iter),
         sample_method=str(args.sample_method),
         ball_method=str(args.ball_method),
+        merge_ratio=float(args.merge_ratio),
         random_state=int(args.random_state),
         verbose=bool(args.verbose) if num_procs <= 1 else False,
     )

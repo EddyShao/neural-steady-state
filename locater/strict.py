@@ -342,7 +342,7 @@ def adaptive_peak_detection_amr(
     ball_method: str = "grid",
     random_state: int = 0,
     verbose: bool = True,
-    valley_ratio: float = 0.9,
+    merge_ratio: float = 0.9,
 ) -> tuple[np.ndarray, np.ndarray, list[AdaptiveStep], list[int]]:
     """AMR with fixed number of centers; overlapping regions may be merged for sampling,
     but centers are always re-clustered back to `num`.
@@ -479,7 +479,8 @@ def adaptive_peak_detection_amr(
             break
 
     layers = [step.layer for step in history]
-    centers = merge_centers(centers, f, ratio=0.9, n_samples=100)
+    if float(merge_ratio) < 1.0:
+        centers = merge_centers(centers, f, ratio=float(merge_ratio), n_samples=100)
     return centers, init_centers, history, layers
 
 
@@ -558,7 +559,12 @@ def main() -> None:
     p.add_argument("--conv-th", type=float, default=1e-2, help="Convergence threshold on center movement.")
     p.add_argument("--max-iter", type=int, default=25)
     p.add_argument("--random-state", type=int, default=0)
-    p.add_argument("--valley-ratio", type=float, default=0.9, help="Ratio for valley detection between centers.")
+    p.add_argument(
+        "--merge-ratio",
+        type=float,
+        default=0.9,
+        help="Merge centers only when this ratio is below 1.0; smaller values make merging stricter.",
+    )
 
     p.add_argument("--sample-method", type=str, default="grid", choices=["grid", "uniform"])
     p.add_argument("--ball-method", type=str, default="grid", choices=["grid", "uniform"])
@@ -594,6 +600,7 @@ def main() -> None:
         ball_method=str(args.ball_method),
         random_state=int(args.random_state),
         verbose=True,
+        merge_ratio=float(args.merge_ratio),
     )
 
     print(f"Final centers: {centers.tolist()}")

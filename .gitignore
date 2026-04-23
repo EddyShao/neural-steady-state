@@ -6,8 +6,9 @@ archive/
 __pycache__/
 *.py[cod]
 *$py.class
-logs/
-logs_archive/
+logs*/
+AppMD/
+figs/
 */__pycache__/
 **/__pycache__/
 venv/

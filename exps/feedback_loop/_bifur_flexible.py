@@ -193,6 +193,8 @@ def main() -> None:
 
 	# output
 	p.add_argument("--out-root", type=str, default=os.path.join(exp_dir, "bifur_flexible_runs"))
+	p.add_argument("--skip-figure", action="store_true", help="Do not save the bifurcation figure.")
+	p.add_argument("--skip-data", action="store_true", help="Do not save the bifurcation data archive.")
 
 	args = p.parse_args()
 
@@ -354,30 +356,36 @@ def main() -> None:
 		ax.legend(loc="best", fontsize=9)
 
 	fig.tight_layout()
-	fig.savefig(fig_path, dpi=200)
-	plt.close(fig)
+	if args.skip_figure:
+		plt.close(fig)
+		print("Skipped figure save")
+	else:
+		fig.savefig(fig_path, dpi=200)
+		plt.close(fig)
+		print(f"Saved figure: {fig_path}")
 
-	np.savez(
-		data_path,
-		metadata_json=np.asarray(
-			json.dumps(
-				{
-					"script": "_bifur_flexible.py",
-					"args": vars(args),
-					"stable_threshold": stable_thresh,
-				},
-				sort_keys=True,
-			)
-		),
-		alpha1_grid=alpha1_grid,
-		true_centers=np.asarray(true_centers_by_alpha1, dtype=object),
-		true_stability=np.asarray(true_stability_by_alpha1, dtype=object),
-		pred_centers=np.asarray(pred_centers_by_alpha1, dtype=object),
-		pred_stability=np.asarray(pred_stability_by_alpha1, dtype=object),
-	)
-
-	print(f"Saved figure: {fig_path}")
-	print(f"Saved data: {data_path}")
+	if args.skip_data:
+		print("Skipped data save")
+	else:
+		np.savez(
+			data_path,
+			metadata_json=np.asarray(
+				json.dumps(
+					{
+						"script": "_bifur_flexible.py",
+						"args": vars(args),
+						"stable_threshold": stable_thresh,
+					},
+					sort_keys=True,
+				)
+			),
+			alpha1_grid=alpha1_grid,
+			true_centers=np.asarray(true_centers_by_alpha1, dtype=object),
+			true_stability=np.asarray(true_stability_by_alpha1, dtype=object),
+			pred_centers=np.asarray(pred_centers_by_alpha1, dtype=object),
+			pred_stability=np.asarray(pred_stability_by_alpha1, dtype=object),
+		)
+		print(f"Saved data: {data_path}")
 	print(f"Predicted slices: {sum(len(v) for v in pred_centers_by_alpha1)} | True slices: {sum(len(v) for v in true_centers_by_alpha1)}")
 
 

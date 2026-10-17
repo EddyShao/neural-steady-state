@@ -1,69 +1,194 @@
-# Data-Driven discovery of steady states in ODE systesms
+# Data-Driven Discovery of Steady States in Parametric ODE Systems
 
-This code base provides a workflow for learning and locating steady-state solutions of parametric ODE systems.
-It centers on three learned components: a solution-parameter matching network (PSNN), a stability classifier,
-and a solution-count classifier. Example pipelines are included for the Gray-Scott and feedback-loop systems.
-This repository corresponds to the paper: https://arxiv.org/abs/2312.10315
+This repository implements a three-stage pipeline for learning and locating steady states of parametric ODE systems from data. The codebase is organized around two example systems:
 
-## Networks
-The following 3 networks are trained independently. 
+- Gray-Scott
+- Feedback loop
 
-### 1) Solution-count (classifier)
-- Given theta, predicts the number of steady states.
-- Implemented in `psnn/nets.py` as `ThetaCountClassifier`.
-- Trained with (class-weighted) cross-entropy to address label imbalance.
+The learned workflow has three parts:
 
-### 2) PSNN (solution-parameter matching)
-- Trains a neural (probabilistics) field `Phi(theta, u)` that approximates target function $\Phi$.
-- Implemented in `psnn/nets.py` as `PSNN`.
-- Trained via regression on generated data: `Theta`, `U`, and `Phi` stored in `*_data_*.npz`.
+1. Data generation and preprocessing
+2. Auxiliary networks
+3. Locating solutions
 
-### 3) Stability classifier
-- Given (theta, u), predicts whether a steady state is stable.
-- Note: The input is not necessary a parameter-solution pair; Therefore, the network's output will be $\mathbb{P}(\text{stable} \ | \ (\theta,u)\text{ is a solution})$. Very much similar to the multi-proecess training part.
-- Implemented as a PSNN-style inner product with a logistic output in `psnn/nets.py` as `StabilityClassifier`.
-- Trained with (class-weighted) binary cross-entropy to address label imbalance.
+The repository corresponds to the paper: https://arxiv.org/abs/2312.10315
 
+## Pipeline Overview
 
+### 1. Data Generation and Preprocessing
 
-## Pipeline for locating solutions (single theta)
-1) Use the solution-count classifier to estimate the number of solutions.
-2) Use PSNN Phi(theta, u) to evaluate a grid in state space and build a landscape of Gaussian bumps.
-3) Apply a cutoff L to keep points with Phi >= L.
-4) Cluster those points using the predicted count as the cluster number.
-5) Run the stability classifier on each cluster center to obtain stability.
+For each parameter value `theta`, the experiment code first generates observations of steady states `U(theta)`. Those observations are then converted into training data for the PSNN by sampling state-space points `u` and evaluating a target field `Phi(theta, u)` built from the observed steady states.
 
-## Examples
+This stage also supports synthetic incompleteness: some true solutions can be removed from the observation set before preprocessing. That makes it possible to study how the downstream models and locaters behave when observations are incomplete.
 
-### Gray-Scott
-- Data generation: `python exps/grey_scott/data/gen_gray_scott.py`
-- Training (PSNN + stability + count): `python exps/grey_scott/train.py`
-- Solution map with stability: `python exps/grey_scott/locate_sol_classifier.py --make_map`
+Outputs of this stage include:
 
-### Feedback loop
-- Data generation: `python exps/feedback_loop/_gen_data.py --config configs/major.yaml --seed 42`
-- Training (PSNN + stability + count): `python exps/feedback_loop/run_train.py --config configs/major.yaml --seed 42`
-- Bifurcation plotting: `python exps/feedback_loop/run_bifur.py --config configs/major.yaml --seed 42 --mode strict -- --L-cut 0.35`
-- Test-observation evaluation: `python exps/feedback_loop/run_eval.py --config configs/major.yaml --seed 42 --mode strict -- --device cpu`
+- observation files such as `*_obs_train.pkl`, `*_obs_test.pkl`, and sometimes `*_obs_missing.pkl`
+- PSNN regression data such as `*_data_train.npz` and `*_data_test.npz`
 
-## Configuration (YAML)
-All experiment hyperparameters are collected in YAML config files:
-- `exps/grey_scott/config.yaml`
-- `exps/feedback_loop/config.yaml`
+### 2. Main and Auxiliary Networks
 
-Each config separates:
-- `data_generation`: data sampling and output files.
-- `training`: model hyperparameters and checkpoints.
-- `postprocessing`: locator/bifurcation settings.
+The central learned model is the PSNN, and it is supported by two auxiliary networks:
 
-All scripts accept `--config path/to/config.yaml`. If omitted, they will use the
-default config in the experiment directory when present.
+- PSNN: the main network, which learns the surrogate field `Phi(theta, u)` and defines the landscape used for solution search
+- Counting classifier: an auxiliary network that predicts how many steady states exist for a given `theta`
+- Stability classifier: an auxiliary network that predicts whether a candidate `(theta, u)` is stable
+
+These networks are later combined during the locating stage.
+
+### 3. Locating Solutions
+
+Given a parameter `theta`, the locator uses the learned PSNN field to search the state domain `D` for peaks.
+
+The basic logic is:
+
+1. Sample points in the state domain.
+2. Evaluate the learned field `Phi(theta, u)`.
+3. Keep points with large values relative to the current maximum.
+4. Cluster the retained points to obtain candidate steady states.
+5. Refine locally around those candidates with adaptive resampling.
+6. Apply the stability classifier to the final centers.
+
+There are two locator modes:
+
+- Flexible locator: does not use the counting classifier. It infers the number of clusters from the sampled high-value region, then merges centers if there is no valley between them.
+- Strict locator: uses the counting classifier first, then reclusters with a fixed number of centers during adaptive refinement.
+
+In both modes, the PSNN gives the search landscape and the stability classifier labels the stability of located solutions.
+
+## Repository Structure
+
+### Core Learning Modules
+
+- `psnn/nets.py`: neural network definitions for PSNN, the theta-to-count classifier, and the stability classifier.
+- `psnn/datasets.py`: dataset and dataloader wrappers for PSNN regression data and observation-derived classification data.
+- `psnn/trainer.py`: training loops for the three models.
+- `psnn/run_train.py`: shared training entrypoint that reads config, loads generated data, trains enabled models, and saves checkpoints.
+- `psnn/loaders.py`: checkpoint loading helpers and callable wrappers for PSNN, count prediction, and stability prediction.
+- `psnn/config.py`: YAML config loading, merging, and path resolution utilities.
+- `psnn/utils.py`: model metadata helpers used when saving and reloading checkpoints.
+
+### Locating Modules
+
+- `locater/flexible.py`: adaptive locator without the count classifier. It samples the PSNN landscape, chooses cluster count from the data, merges centers based on valley checks, and refines candidates locally.
+- `locater/strict.py`: adaptive locator with the count classifier. It fixes the number of clusters using the predicted count, merges overlapping regions only for sampling, and reclusters back to the prescribed number during refinement.
+
+## Experiment Layout
+
+Each system has its own experiment directory under `exps/`.
+
+### Stage 1: Data Generation and Preprocessing
+
+Gray-Scott:
+
+- `exps/gray_scott/_gen_data.py`: defines the Gray-Scott parameter box, state domain, steady-state solver, target `Phi` construction, synthetic incompleteness, and export of training/test datasets.
+- `exps/gray_scott/configs/*.yaml`: experiment variants such as complete and incomplete-data settings.
+- `exps/gray_scott/base.yaml`: shared defaults for domain bounds, sampling, model training, and output paths.
+
+Feedback loop:
+
+- `exps/feedback_loop/_gen_data.py`: defines the feedback-loop parameter box, state domain, steady-state solver, target `Phi` construction, synthetic incompleteness, and export of training/test datasets.
+- `exps/feedback_loop/configs/*.yaml`: experiment variants such as complete and incomplete-data settings.
+- `exps/feedback_loop/base.yaml`: shared defaults for domain bounds, sampling, model training, and output paths.
+
+### Stage 2: Auxiliary Network Training
+
+Gray-Scott:
+
+- `exps/gray_scott/run_train.py`: convenience entrypoint that generates data for one config/seed pair and then trains PSNN, counting, and stability models using the shared trainer.
+
+Feedback loop:
+
+- `exps/feedback_loop/run_train.py`: same orchestration as above for the feedback-loop system.
+
+Saved checkpoints typically include:
+
+- `psnn_phi.pt`
+- `psnn_numsol.pt`
+- `psnn_stability_cls.pt`
+
+### Stage 3: Locating, Evaluation, and Bifurcation Runs
+
+Gray-Scott:
+
+- `exps/gray_scott/run_eval.py`: evaluates the learned locator on held-out observations, in either `flexible` or `strict` mode.
+- `exps/gray_scott/_eval_common.py`: shared evaluation utilities.
+- `exps/gray_scott/_eval_flexible.py`: evaluation logic for the flexible locator.
+- `exps/gray_scott/_eval_strict.py`: evaluation logic for the strict locator.
+- `exps/gray_scott/run_bifur.py`: wrapper for bifurcation-style sweeps and plots.
+- `exps/gray_scott/_bifur_flexible.py`: flexible bifurcation runner.
+- `exps/gray_scott/_bifur_strict.py`: strict bifurcation runner.
+
+Feedback loop:
+
+- `exps/feedback_loop/run_eval.py`: evaluates the learned locator on held-out observations, in either `flexible` or `strict` mode.
+- `exps/feedback_loop/_eval_common.py`: shared evaluation utilities.
+- `exps/feedback_loop/_eval_flexible.py`: evaluation logic for the flexible locator.
+- `exps/feedback_loop/_eval_strict.py`: evaluation logic for the strict locator.
+- `exps/feedback_loop/run_bifur.py`: wrapper for bifurcation-style sweeps and plots.
+- `exps/feedback_loop/_bifur_flexible.py`: flexible bifurcation runner.
+- `exps/feedback_loop/_bifur_strict.py`: strict bifurcation runner.
+
+## Typical Usage
+
+### Train a Full Pipeline Run
+
+Gray-Scott:
+
+```bash
+python exps/gray_scott/run_train.py --config configs/complete.yaml --seed 123
+```
+
+Feedback loop:
+
+```bash
+python exps/feedback_loop/run_train.py --config configs/complete.yaml --seed 42
+```
+
+These commands:
+
+1. Generate observations
+2. Preprocess them into PSNN training data
+3. Train PSNN
+4. Train the counting classifier
+5. Train the stability classifier
+
+### Evaluate Locating on Test Observations
+
+Strict mode:
+
+```bash
+python exps/gray_scott/run_eval.py --config configs/complete.yaml --seed 123 --mode strict -- --device cpu
+python exps/feedback_loop/run_eval.py --config configs/complete.yaml --seed 42 --mode strict -- --device cpu
+```
+
+Flexible mode:
+
+```bash
+python exps/gray_scott/run_eval.py --config configs/complete.yaml --seed 123 --mode flexible -- --device cpu
+python exps/feedback_loop/run_eval.py --config configs/complete.yaml --seed 42 --mode flexible -- --device cpu
+```
+
+### Run Bifurcation-Style Sweeps
+
+```bash
+python exps/gray_scott/run_bifur.py --config configs/complete.yaml --seed 123 --mode strict -- --device cpu
+python exps/feedback_loop/run_bifur.py --config configs/complete.yaml --seed 42 --mode flexible -- --device cpu
+```
+
 ## Outputs
-- `psnn_phi.pt`: PSNN weights (Phi landscape).
-- `psnn_numsol.pt`: solution-count classifier.
-- `psnn_stability_cls.pt`: stability classifier.
-- feedback-loop evaluation outputs: JSON metrics and NPZ per-theta details under `test_observation_eval_strict/` or `test_observation_eval_flexible/`.
+
+A typical run directory contains:
+
+- `data/`: generated observations and PSNN regression datasets
+- `psnn_phi.pt`: learned PSNN field
+- `psnn_numsol.pt`: learned count classifier
+- `psnn_stability_cls.pt`: learned stability classifier
+- `test_observation_eval_strict/` or `test_observation_eval_flexible/`: evaluation outputs
+- `bifur_strict_runs/` or `bifur_flexible_runs/`: bifurcation outputs
 
 ## Notes
-- If you change model widths/depths during training, load scripts infer shapes from checkpoints when needed.
-- Class imbalance is handled with weighted losses for both classifiers.
+
+- The flexible and strict locaters share the same learned PSNN and stability models; the main difference is whether the count classifier is used to fix the number of centers.
+- Synthetic incompleteness is introduced during observation generation, before preprocessing into training targets.
+- YAML configs control data generation, incompleteness, training hyperparameters, and output locations.

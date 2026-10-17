@@ -162,6 +162,8 @@ def main() -> None:
     p.add_argument("--random-state", type=int, default=int(cfg_get(cfg, "seed", 0)))
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--out-root", type=str, default=os.path.join(exp_dir, "bifur_strict_runs"))
+    p.add_argument("--skip-figure", action="store_true", help="Do not save the bifurcation figure.")
+    p.add_argument("--skip-data", action="store_true", help="Do not save the bifurcation data archive.")
     args = p.parse_args()
 
     device = _device_from_arg(args.device)
@@ -301,21 +303,27 @@ def main() -> None:
         ax.legend(loc="best", fontsize=9)
 
     fig.tight_layout()
-    fig.savefig(fig_path, dpi=200)
-    plt.close(fig)
+    if args.skip_figure:
+        plt.close(fig)
+        print("Skipped figure save")
+    else:
+        fig.savefig(fig_path, dpi=200)
+        plt.close(fig)
+        print(f"Saved figure: {fig_path}")
 
-    np.savez(
-        data_path,
-        metadata_json=np.asarray(json.dumps({"script": "_bifur_strict.py", "args": vars(args), "stable_threshold": stable_thresh}, sort_keys=True)),
-        f_grid=f_grid,
-        true_centers=np.asarray(true_centers_by_f, dtype=object),
-        true_stability=np.asarray(true_stability_by_f, dtype=object),
-        pred_centers=np.asarray(pred_centers_by_f, dtype=object),
-        pred_stability=np.asarray(pred_stability_by_f, dtype=object),
-    )
-
-    print(f"Saved figure: {fig_path}")
-    print(f"Saved data: {data_path}")
+    if args.skip_data:
+        print("Skipped data save")
+    else:
+        np.savez(
+            data_path,
+            metadata_json=np.asarray(json.dumps({"script": "_bifur_strict.py", "args": vars(args), "stable_threshold": stable_thresh}, sort_keys=True)),
+            f_grid=f_grid,
+            true_centers=np.asarray(true_centers_by_f, dtype=object),
+            true_stability=np.asarray(true_stability_by_f, dtype=object),
+            pred_centers=np.asarray(pred_centers_by_f, dtype=object),
+            pred_stability=np.asarray(pred_stability_by_f, dtype=object),
+        )
+        print(f"Saved data: {data_path}")
     print(f"Predicted slices: {sum(len(v) for v in pred_centers_by_f)} | True slices: {sum(len(v) for v in true_centers_by_f)}")
 
 
